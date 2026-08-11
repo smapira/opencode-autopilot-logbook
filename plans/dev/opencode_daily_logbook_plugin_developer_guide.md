@@ -23,7 +23,7 @@ OpenCode のセッション終了時に、自動的に日報と引き継ぎ文�
 | ファイル | 用途 |
 |---------|------|
 | `.opencode/plugins/daily-logbook.ts` | 自動日報プラグイン |
-| `.opencode/templates/daily-logbook.md` | 日報生成テンプレート（ユーザ編集可能） |
+| `plans/dev/daily-logbook.md` | 日報生成テンプレート（開発者向け指示書、編集可能） |
 | `.opencode/commands/daily-logbook.md` | 手動トリガーコマンド |
 
 ---
@@ -48,11 +48,12 @@ opencode-autopilot-logbook/
 ├── .opencode/                    # OpenCode 設定ディレクトリ（シンボリックリンク）
 │   ├── plugins/                  # プラグイン格納ディレクトリ（新規作成）
 │   │   └── daily-logbook.ts       # 自動日報プラグイン
-│   ├── templates/                # テンプレート格納ディレクトリ（新規作成）
-│   │   └── daily-logbook.md       # 日報生成テンプレート
 │   ├── commands/                 # コマンド格納ディレクトリ（新規作成）
 │   │   └── daily-logbook.md       # 手動トリガーコマンド
 │   └── ...                       # 既存の設定ファイル
+└── plans/
+    └── dev/
+        └── daily-logbook.md       # 日報生成テンプレート（開発者向け指示書）
 ```
 
 ---
@@ -123,7 +124,7 @@ await client.session.create({
 | 変数名 | デフォルト | 説明 |
 |--------|-----------|------|
 | `OPENCODE_DAILY_LOGBOOK_DISABLED` | `false` | `true` でプラグイン無効化 |
-| `OPENCODE_DAILY_LOGBOOK_TEMPLATE` | `.opencode/templates/daily-logbook.md` | テンプレートファイルパスを指定 |
+| `OPENCODE_DAILY_LOGBOOK_TEMPLATE` | `plans/dev/daily-logbook.md` | テンプレートファイルパスを指定 |
 
 ### 3.4. テンプレート機能（変数機能）
 
@@ -143,7 +144,7 @@ await client.session.create({
 
 #### テンプレートの例
 
-**ファイル**: `.opencode/templates/daily-logbook.md`
+**ファイル**: `plans/dev/daily-logbook.md`
 
 ```markdown
 セッション {{ sessionId }} の内容を元に、日報と引き継ぎを作成してください。
@@ -168,8 +169,8 @@ await client.session.create({
 ```bash
 cd /Users/bookair18/OS/home/Codes/github.com/smapira/opencode-autopilot-logbook
 mkdir -p .opencode/plugins
-mkdir -p .opencode/templates
 mkdir -p .opencode/commands
+# テンプレートは plans/dev/daily-logbook.md に配置（開発者向け指示書）
 ```
 
 ### Step 2: プラグインファイル作成
@@ -211,7 +212,7 @@ export const DailyLogbookPlugin = async ({
   const buildPrompt = (sessionId: string): string => {
     const templatePath =
       process.env.OPENCODE_DAILY_LOGBOOK_TEMPLATE ??
-      ".opencode/templates/daily-logbook.md";
+      "plans/dev/daily-logbook.md";
     const resolvedPath = resolve(directory ?? "", templatePath);
     const template = readFileSync(resolvedPath, "utf-8");
 
@@ -282,7 +283,7 @@ export const DailyLogbookPlugin = async ({
 
 ### Step 3: テンプレートファイル作成
 
-**ファイル**: `.opencode/templates/daily-logbook.md`
+**ファイル**: `plans/dev/daily-logbook.md`
 
 ```markdown
 セッション {{ sessionId }} の内容を元に、日報と引き継ぎを作成してください。
@@ -309,7 +310,7 @@ export const DailyLogbookPlugin = async ({
 description: セッションの日報と引き継ぎを作成
 agent: build
 ---
-.opencode/templates/daily-logbook.md のテンプレートに従って、このセッションの日報と引き継ぎを作成してください。
+plans/dev/daily-logbook.md のテンプレートに従って、このセッションの日報と引き継ぎを作成してください。
 
 テンプレートの {{ sessionId }} にはこのセッションのID、{{ date }} には今日の日付（YYYYMMDD）が置換されます。
 
@@ -405,7 +406,7 @@ ls -la .opencode/commands/
 ```bash
 # 1. ファイルを配置
 cp daily-logbook.ts .opencode/plugins/
-cp daily-logbook.md .opencode/templates/
+cp daily-logbook.md plans/dev/
 cp daily-logbook.md .opencode/commands/
 
 # 2. OpenCode を再起動
@@ -419,7 +420,7 @@ opencode session
 
 ```bash
 # 1. Git にコミット
-git add .opencode/plugins/daily-logbook.ts .opencode/templates/daily-logbook.md .opencode/commands/daily-logbook.md
+git add .opencode/plugins/daily-logbook.ts plans/dev/daily-logbook.md .opencode/commands/daily-logbook.md
 git commit -m "feat: 日報自動作成プラグインを追加"
 
 # 2. プッシュ

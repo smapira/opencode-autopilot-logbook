@@ -124,15 +124,16 @@ await client.session.create({
 | 変数名 | デフォルト | 説明 |
 |--------|-----------|------|
 | `OPENCODE_DAILY_LOGBOOK_DISABLED` | `false` | `true` でプラグイン無効化 |
-| `OPENCODE_DAILY_LOGBOOK_TEMPLATE` | `plans/dev/daily-logbook.md` | テンプレートファイルパスを指定 |
+| `OPENCODE_DAILY_LOGBOOK_TEMPLATE` | 未設定（ツール内サンプルテンプレート） | テンプレートファイルパスを指定。設定時はそのファイルを使用、未設定時はツール内サンプルテンプレートを使用 |
 
 ### 3.4. テンプレート機能（変数機能）
 
-ユーザはテンプレートファイルを編集することで、日報のフォーマットを自由にカスタマイズできる。
+テンプレートの参照順は以下の通り：
 
-#### テンプレートファイルの形式
+1. **環境変数 `OPENCODE_DAILY_LOGBOOK_TEMPLATE`** が設定されている場合 → 指定されたテンプレートファイルを読み込む
+2. **未設定の場合** → ツール内に埋め込まれたサンプルテンプレートを使用する
 
-テンプレートは Markdown 形式。`{{ 変数名 }}` のプレースホルダがプラグイン実行時に置換される。
+テンプレートは Markdown 形式。`{{ 変数名 }}` のプレースホルダがプラグイン実行時に置換される。テンプレートファイルを編集することで、日報のフォーマットを自由にカスタマイズできる。
 
 #### 使用可能な変数
 
@@ -144,7 +145,7 @@ await client.session.create({
 
 #### テンプレートの例
 
-**ファイル**: `plans/dev/daily-logbook.md`
+**ファイル**: `plans/dev/daily-logbook.md`（環境変数で指定する場合の参考）
 
 ```markdown
 セッション {{ sessionId }} の内容を元に、日報と引き継ぎを作成してください。
@@ -159,6 +160,8 @@ await client.session.create({
 - 日報は短く、引き継ぎは次セッションが再開しやすい内容を書く
 - やりとりの要点、決まった方針、次アクションを優先する
 ```
+
+ツール内サンプルテンプレートは上記と同等の内容をプラグインコード内に定数として保持する。
 
 ---
 
@@ -179,15 +182,33 @@ mkdir -p .opencode/commands
 
 ```typescript
 /**
- * OpenCode Session Daily Report Plugin
+ * OpenCode Daily Logbook Plugin
  * 
  * セッション終了時に自動で日報・引き継ぎを作成する。
- * テンプレートファイルを読み込み、変数を置換して日報生成プロンプトを組み立てる。
- * テンプレートはユーザが編集可能で、日報のフォーマットを自由にカスタマイズできる。
+ * テンプレートを解決し、変数を置換して日報生成プロンプトを組み立てる。
+ * テンプレートの参照順:
+ *   1. 環境変数 OPENCODE_DAILY_LOGBOOK_TEMPLATE で指定されたファイル
+ *   2. 未設定の場合はツール内のサンプルテンプレート
  */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { PluginContext, PluginReturn, SessionIdleInput } from "@opencode-ai/plugin";
+
+/**
+ * ツール内に埋め込まれたサンプルテンプレート（フォールバック）。
+ * 環境変数 OPENCODE_DAILY_LOGBOOK_TEMPLATE が未設定の場合に使用される。
+ */
+const SAMPLE_TEMPLATE = `セッション {{ sessionId }} の内容を元に、日報と引き継ぎを作成してください。
+
+手順:
+1. 今日の日付（{{ date }}）の daily/YYYYMMDD_日報.md を作成/更新
+2. 今日の日付（{{ date }}）の daily/YYYYMMDD_引き継ぎ.md を作成/更新
+3. 作成したファイル名を報告
+
+注意:
+- 既存ファイルがある場合は上書きせず、追記・更新する
+- 日報は短く、引き継ぎは次セッションが再開しやすい内容を書く
+- やりとりの要点、決まった方針、次アクションを優先する`;
 
 export const DailyLogbookPlugin = async ({ 
   project, 
@@ -206,15 +227,22 @@ export const DailyLogbookPlugin = async ({
   });
 
   /**
-   * テンプレートファイルを読み込み、変数を置換してプロンプトを組み立てる。
-   * テンプレートパスは環境変数 OPENCODE_DAILY_LOGBOOK_TEMPLATE で上書き可能。
+   * テンプレートを解決してプロンプトを組み立てる。
+   * 1. 環境変数 OPENCODE_DAILY_LOGBOOK_TEMPLATE で指定されたテンプレートファイルを読み込む
+   * 2. 未設定の場合はツール内のサンプルテンプレート（SAMPLE_TEMPLATE）を使用する
    */
   const buildPrompt = (sessionId: string): string => {
-    const templatePath =
-      process.env.OPENCODE_DAILY_LOGBOOK_TEMPLATE ??
-      "plans/dev/daily-logbook.md";
-    const resolvedPath = resolve(directory ?? "", templatePath);
-    const template = readFileSync(resolvedPath, "utf-8");
+    let template: string;
+    const templatePath = process.env.OPENCODE_DAILY_LOGBOOK_TEMPLATE;
+
+    if (templatePath) {
+      // 環境変数で指定されたテンプレートファイルを読み込む
+      const resolvedPath = resolve(directory ?? "", templatePath);
+      template = readFileSync(resolvedPath, "utf-8");
+    } else {
+      // ツール内のサンプルテンプレートを使用
+      template = SAMPLE_TEMPLATE;
+    }
 
     const now = new Date();
     const dateYmd = [
@@ -299,7 +327,7 @@ export const DailyLogbookPlugin = async ({
 - やりとりの要点、決まった方針、次アクションを優先する
 ```
 
-テンプレートを編集することで、日報のフォーマットや指示を自由に変更できる。
+テンプレートを編集することで、日報のフォーマットや指示を自由に変更できる。このファイルを使用する場合は、環境変数 `OPENCODE_DAILY_LOGBOOK_TEMPLATE` でパスを指定する。指定しない場合はツール内サンプルテンプレートが使用される。
 
 ### Step 4: コマンドファイル作成
 
@@ -334,7 +362,7 @@ plans/dev/daily-logbook.md のテンプレートに従って、このセッシ�
 # 日報プラグインを無効化
 export OPENCODE_DAILY_LOGBOOK_DISABLED=true
 
-# テンプレートパスを変更
+# テンプレートパスを変更（未設定の場合はツール内サンプルテンプレートを使用）
 export OPENCODE_DAILY_LOGBOOK_TEMPLATE=/path/to/custom/template.md
 ```
 
@@ -349,7 +377,8 @@ export OPENCODE_DAILY_LOGBOOK_TEMPLATE=/path/to/custom/template.md
 | 自動日報生成 | セッションで任意の作業を行い、待機 | `session.idle` 発火後、日報ファイルが生成される |
 | 手動トリガー | `/daily-logbook` コマンドを実行 | 日報ファイルが生成される |
 | テンプレート変数置換 | テンプレートに `{{ date }}` を含めて確認 | プロンプト内で実際の日付に置換される |
-| テンプレートカスタマイズ | テンプレートの文章を変更してセッション | 変更したフォーマットで日報が生成される |
+| サンプルテンプレート | 環境変数未設定でセッション | ツール内サンプルテンプレートで日報が生成される |
+| テンプレートカスタマイズ | 環境変数でテンプレートを指定してセッション | 指定したフォーマットで日報が生成される |
 | テンプレートパス変更 | `OPENCODE_DAILY_LOGBOOK_TEMPLATE` を設定 | 指定したテンプレートが使用される |
 | 無効化 | `OPENCODE_DAILY_LOGBOOK_DISABLED=true` を設定してセッション | プラグインが動作しない |
 
@@ -357,7 +386,8 @@ export OPENCODE_DAILY_LOGBOOK_TEMPLATE=/path/to/custom/template.md
 
 | テストケース | 手順 | 期待結果 |
 |------------|------|---------|
-| テンプレート欠落 | テンプレートファイルを一時的にリネーム | エラーログが記録され、セッションは停止しない |
+| 指定テンプレート欠落 | `OPENCODE_DAILY_LOGBOOK_TEMPLATE` で存在しないパスを指定 | エラーログが記録され、セッションは停止しない |
+| 環境変数未設定 | 環境変数を設定せずにセッション | ツール内サンプルテンプレートで正常動作 |
 | 書き込み権限 | `daily/` ディレクトリの権限を変更 | エラーログが記録され、セッションは停止しない |
 
 ### 5.3. 統合テスト
@@ -380,7 +410,7 @@ tail -f ~/.opencode/logs/plugin.log | grep daily-logbook
 |------|------|------|
 | プラグインが起動しない | ファイルパスのtypos | `.opencode/plugins/daily-logbook.ts` の存在を確認 |
 | `session.idle` が発火しない | OpenCode バージョン不兼容 | OpenCode を最新に更新 |
-| 日報が生成されない | テンプレートファイルの問題 | テンプレートファイルの存在と内容を確認 |
+| 日報が生成されない | 環境変数指定のテンプレートファイルが存在しない | パスを確認、または環境変数を未設定にしてサンプルテンプレートを使用 |
 | エラーログが記録される | 権限不足 | `daily/` ディレクトリの書き込み権限を確認 |
 
 ### 6.2. デバッグ方法
@@ -439,9 +469,10 @@ ssh xs "opencode restart"
 
 ### 8.1. テンプレート機能との連携
 
-- プラグインはテンプレートファイルを読み込み、変数を置換して日報生成プロンプトを組み立てる
-- テンプレートはユーザが自由に編集でき、日報のフォーマットをカスタマイズできる
-- テンプレートの変更はプラグインに自動反映される（再起動不要）
+- テンプレートの参照順: 環境変数 `OPENCODE_DAILY_LOGBOOK_TEMPLATE` で指定されたファイル → 未設定ならツール内サンプルテンプレート
+- テンプレートは Markdown 形式で、`{{ 変数名 }}` を変数置換して日報生成プロンプトを組み立てる
+- テンプレートファイルはユーザが自由に編集でき、日報のフォーマットをカスタマイズできる
+- テンプレートファイルの変更はプラグインに自動反映される（再起動不要）
 
 ### 8.2. ファイル構成
 

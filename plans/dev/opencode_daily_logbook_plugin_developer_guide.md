@@ -9,7 +9,7 @@
 
 ## 1. 概要
 
-OpenCode のセッション終了時に、自動的に日報と引き継ぎ文書を作成するプラグインを開発する。
+OpenCode のセッション終了時に、自動的に日報を作成するプラグインを開発する。
 
 ### 1.1. 開発目標
 
@@ -148,16 +148,15 @@ await client.session.create({
 **ファイル**: `plans/dev/daily-logbook.md`（環境変数で指定する場合の参考）
 
 ```markdown
-セッション {{ sessionId }} の内容を元に、日報と引き継ぎを作成してください。
+セッション {{ sessionId }} の内容を元に、日報を作成してください。
 
 手順:
 1. 今日の日付（{{ date }}）の daily/YYYYMMDD_日報.md を作成/更新
-2. 今日の日付（{{ date }}）の daily/YYYYMMDD_引き継ぎ.md を作成/更新
-3. 作成したファイル名を報告
+2. 作成したファイル名を報告
 
 注意:
 - 既存ファイルがある場合は上書きせず、追記・更新する
-- 日報は短く、引き継ぎは次セッションが再開しやすい内容を書く
+- 日報は短く要点を絞って書く
 - やりとりの要点、決まった方針、次アクションを優先する
 ```
 
@@ -184,7 +183,7 @@ mkdir -p .opencode/commands
 /**
  * OpenCode Daily Logbook Plugin
  * 
- * セッション終了時に自動で日報・引き継ぎを作成する。
+ * セッション終了時に自動で日報を作成する。
  * テンプレートを解決し、変数を置換して日報生成プロンプトを組み立てる。
  * テンプレートの参照順:
  *   1. 環境変数 OPENCODE_DAILY_LOGBOOK_TEMPLATE で指定されたファイル
@@ -198,16 +197,15 @@ import type { PluginContext, PluginReturn, SessionIdleInput } from "@opencode-ai
  * ツール内に埋め込まれたサンプルテンプレート（フォールバック）。
  * 環境変数 OPENCODE_DAILY_LOGBOOK_TEMPLATE が未設定の場合に使用される。
  */
-const SAMPLE_TEMPLATE = `セッション {{ sessionId }} の内容を元に、日報と引き継ぎを作成してください。
+const SAMPLE_TEMPLATE = `セッション {{ sessionId }} の内容を元に、日報を作成してください。
 
 手順:
 1. 今日の日付（{{ date }}）の daily/YYYYMMDD_日報.md を作成/更新
-2. 今日の日付（{{ date }}）の daily/YYYYMMDD_引き継ぎ.md を作成/更新
-3. 作成したファイル名を報告
+2. 作成したファイル名を報告
 
 注意:
 - 既存ファイルがある場合は上書きせず、追記・更新する
-- 日報は短く、引き継ぎは次セッションが再開しやすい内容を書く
+- 日報は短く要点を絞って書く
 - やりとりの要点、決まった方針、次アクションを優先する`;
 
 export const DailyLogbookPlugin = async ({ 
@@ -314,16 +312,15 @@ export const DailyLogbookPlugin = async ({
 **ファイル**: `plans/dev/daily-logbook.md`
 
 ```markdown
-セッション {{ sessionId }} の内容を元に、日報と引き継ぎを作成してください。
+セッション {{ sessionId }} の内容を元に、日報を作成してください。
 
 手順:
 1. 今日の日付（{{ date }}）の daily/YYYYMMDD_日報.md を作成/更新
-2. 今日の日付（{{ date }}）の daily/YYYYMMDD_引き継ぎ.md を作成/更新
-3. 作成したファイル名を報告
+2. 作成したファイル名を報告
 
 注意:
 - 既存ファイルがある場合は上書きせず、追記・更新する
-- 日報は短く、引き継ぎは次セッションが再開しやすい内容を書く
+- 日報は短く要点を絞って書く
 - やりとりの要点、決まった方針、次アクションを優先する
 ```
 
@@ -335,16 +332,16 @@ export const DailyLogbookPlugin = async ({
 
 ```markdown
 ---
-description: セッションの日報と引き継ぎを作成
+description: セッションの日報を作成
 agent: build
 ---
-plans/dev/daily-logbook.md のテンプレートに従って、このセッションの日報と引き継ぎを作成してください。
+plans/dev/daily-logbook.md のテンプレートに従って、このセッションの日報を作成してください。
 
 テンプレートの {{ sessionId }} にはこのセッションのID、{{ date }} には今日の日付（YYYYMMDD）が置換されます。
 
 注意:
 - 既存ファイルがある場合は上書きせず、追記・更新する
-- 日報は短く、引き継ぎは次セッションが再開しやすい内容を書く
+- 日報は短く要点を絞って書く
 - やりとりの要点、決まった方針、次アクションを優先する
 ```
 
@@ -478,8 +475,7 @@ ssh xs "opencode restart"
 
 ```
 daily/
-├── YYYYMMDD_日報.md          # 今日やったことの要約
-└── YYYYMMDD_引き継ぎ.md      # 次セッション向け引き継ぎ
+└── YYYYMMDD_日報.md          # 今日やったことの要約
 ```
 
 ### 8.3. 日報の内容
@@ -487,12 +483,6 @@ daily/
 - 今日やったことの要約
 - 新規 Issue / close / 重要更新
 - 高優先タスクや残課題
-
-### 8.4. 引き継ぎの内容
-
-- ユーザーの指示と対応の流れ
-- その場で確定したルールや方針
-- 次セッションですぐ触るべきファイルやタスク
 
 ---
 

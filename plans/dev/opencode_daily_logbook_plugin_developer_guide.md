@@ -151,7 +151,7 @@ await client.session.create({
 セッション {{ sessionId }} の内容を元に、日報を作成してください。
 
 手順:
-1. 今日の日付（{{ date }}）の daily/YYYYMMDD_日報.md を作成/更新
+1. 今日の日付（{{ date }}）の artifacts/daily/YYYYMMDD_日報.md を作成/更新
 2. 作成したファイル名を報告
 
 注意:
@@ -200,7 +200,7 @@ import type { PluginContext, PluginReturn, SessionIdleInput } from "@opencode-ai
 const SAMPLE_TEMPLATE = `セッション {{ sessionId }} の内容を元に、日報を作成してください。
 
 手順:
-1. 今日の日付（{{ date }}）の daily/YYYYMMDD_日報.md を作成/更新
+1. 今日の日付（{{ date }}）の artifacts/daily/YYYYMMDD_日報.md を作成/更新
 2. 作成したファイル名を報告
 
 注意:
@@ -315,7 +315,7 @@ export const DailyLogbookPlugin = async ({
 セッション {{ sessionId }} の内容を元に、日報を作成してください。
 
 手順:
-1. 今日の日付（{{ date }}）の daily/YYYYMMDD_日報.md を作成/更新
+1. 今日の日付（{{ date }}）の artifacts/daily/YYYYMMDD_日報.md を作成/更新
 2. 作成したファイル名を報告
 
 注意:
@@ -385,7 +385,7 @@ export OPENCODE_DAILY_LOGBOOK_TEMPLATE=/path/to/custom/template.md
 |------------|------|---------|
 | 指定テンプレート欠落 | `OPENCODE_DAILY_LOGBOOK_TEMPLATE` で存在しないパスを指定 | エラーログが記録され、セッションは停止しない |
 | 環境変数未設定 | 環境変数を設定せずにセッション | ツール内サンプルテンプレートで正常動作 |
-| 書き込み権限 | `daily/` ディレクトリの権限を変更 | エラーログが記録され、セッションは停止しない |
+| 書き込み権限 | `artifacts/daily/` ディレクトリの権限を変更 | エラーログが記録され、セッションは停止しない |
 
 ### 5.3. 統合テスト
 
@@ -408,7 +408,7 @@ tail -f ~/.opencode/logs/plugin.log | grep daily-logbook
 | プラグインが起動しない | ファイルパスのtypos | `.opencode/plugins/daily-logbook.ts` の存在を確認 |
 | `session.idle` が発火しない | OpenCode バージョン不兼容 | OpenCode を最新に更新 |
 | 日報が生成されない | 環境変数指定のテンプレートファイルが存在しない | パスを確認、または環境変数を未設定にしてサンプルテンプレートを使用 |
-| エラーログが記録される | 権限不足 | `daily/` ディレクトリの書き込み権限を確認 |
+| エラーログが記録される | 権限不足 | `artifacts/daily/` ディレクトリの書き込み権限を確認 |
 
 ### 6.2. デバッグ方法
 
@@ -474,7 +474,7 @@ ssh xs "opencode restart"
 ### 8.2. ファイル構成
 
 ```
-daily/
+artifacts/daily/
 └── YYYYMMDD_日報.md          # 今日やったことの要約
 ```
 

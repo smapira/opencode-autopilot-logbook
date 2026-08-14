@@ -13,8 +13,6 @@ An OpenCode plugin that automatically generates daily reports when a session bec
 
 ## Install
 
-### Method A. npm install (recommended)
-
 ```bash
 npm install -g opencode-autopilot-logbook
 opencode plugin opencode-autopilot-logbook -g
@@ -25,19 +23,6 @@ opencode plugin opencode-autopilot-logbook -g
 > rm -rf ~/.cache/opencode/packages/opencode-autopilot-logbook*
 > ```
 
-### Method B. Copy from source
-
-If you cloned this repository:
-
-```bash
-# Copy the pre-compiled JS plugin
-cp daily-logbook.js ~/.config/opencode/plugins/
-
-# Or build from TypeScript source
-bun build .github/plugins/daily-logbook.ts --outdir /tmp/build --target=bun
-cp /tmp/build/daily-logbook.js ~/.config/opencode/plugins/
-```
-
 ### Restart OpenCode
 
 Quit and relaunch OpenCode.
@@ -46,6 +31,14 @@ Quit and relaunch OpenCode.
 
 - Start a session, do some work, then let it idle
 - A daily report will be generated automatically
+
+## Uninstall
+
+```bash
+opencode plugin opencode-autopilot-logbook -g --remove
+npm uninstall -g opencode-autopilot-logbook
+rm -rf ~/.cache/opencode/packages/opencode-autopilot-logbook*
+```
 
 ## Environment Variables
 

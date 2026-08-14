@@ -13,8 +13,6 @@ OpenCode セッション終了時に、日報を自動生成するプラグイ�
 
 ## インストール
 
-### 方法 A. npm インストール（推奨）
-
 ```bash
 npm install -g opencode-autopilot-logbook
 opencode plugin opencode-autopilot-logbook -g
@@ -25,19 +23,6 @@ opencode plugin opencode-autopilot-logbook -g
 > rm -rf ~/.cache/opencode/packages/opencode-autopilot-logbook*
 > ```
 
-### 方法 B. ソースからコピー
-
-このリポジトリをクローンした場合:
-
-```bash
-# コンパイル済み JS をコピー
-cp daily-logbook.js ~/.config/opencode/plugins/
-
-# または TypeScript からビルド
-bun build .github/plugins/daily-logbook.ts --outdir /tmp/build --target=bun
-cp /tmp/build/daily-logbook.js ~/.config/opencode/plugins/
-```
-
 ### OpenCode を再起動
 
 OpenCode を終了し、再び起動してください。
@@ -46,6 +31,14 @@ OpenCode を終了し、再び起動してください。
 
 - セッションを開始し、作業後にアイドル状態にする
 - 日報が自動生成される
+
+## アンインストール
+
+```bash
+opencode plugin opencode-autopilot-logbook -g --remove
+npm uninstall -g opencode-autopilot-logbook
+rm -rf ~/.cache/opencode/packages/opencode-autopilot-logbook*
+```
 
 ---
 

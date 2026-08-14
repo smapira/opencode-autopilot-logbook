@@ -1,0 +1,38 @@
+{
+  "name": "opencode-autopilot-logbook",
+  "version": "1.0.7",
+  "description": "OpenCode plugin that auto-generates daily reports on session idle",
+  "type": "module",
+  "main": "dist/index.js",
+  "files": [
+    "dist",
+    "README.md",
+    "README.jp.md",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "bun build .github/plugins/daily-logbook.ts --outdir dist --target=bun --outfile index.js",
+    "prepublishOnly": "bun run build"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "daily-report",
+    "logbook",
+    "automation"
+  ],
+  "peerDependencies": {
+    "bun": ">=1.0.0"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "^1.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/smapira/opencode-autopilot-logbook.git"
+  },
+  "license": "MIT"
+}

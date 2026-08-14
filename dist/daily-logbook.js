@@ -1,5 +1,5 @@
 // @bun
-// .github/plugins/daily-logbook.ts
+// daily-logbook.ts
 import { readFileSync } from "fs";
 import { resolve } from "path";
 var SERVICE_NAME = "daily-logbook-plugin";
@@ -18,7 +18,7 @@ var SAMPLE_TEMPLATE = `\u30BB\u30C3\u30B7\u30E7\u30F3 {{ sessionId }} \u306E\u51
 ## \u624B\u9806
 
 1. \u4ECA\u65E5\u306E\u65E5\u4ED8\uFF08{{ dateJp }}\uFF09\u3092\u78BA\u8A8D\u3059\u308B
-2. \`{{ outputDir }}/{{ date }}_\u65E5\u5831.md\` \u3092\u4F5C\u6210\uFF08\u65E2\u5B58\u304C\u3042\u308C\u3070\u8FFD\u8A18\u30FB\u66F4\u65B0\uFF09
+2. \`{{ outputDir }}/{{ date }}_logbook.md\` \u3092\u4F5C\u6210\uFF08\u65E2\u5B58\u304C\u3042\u308C\u3070\u8FFD\u8A18\u30FB\u66F4\u65B0\uFF09
 3. \u4F5C\u6210\u3057\u305F\u30D5\u30A1\u30A4\u30EB\u540D\u3092\u5831\u544A\u3059\u308B
 
 ## \u6CE8\u610F\u4E8B\u9805

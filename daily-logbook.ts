@@ -17,20 +17,20 @@ function getOutputDir(): string {
   return process.env.OPENCODE_DAILY_LOGBOOK_OUTPUT_DIR || DEFAULT_OUTPUT_DIR;
 }
 
-const SAMPLE_TEMPLATE = `セッション {{ sessionId }} の内容を元に、日報を作成してください。
+const SAMPLE_TEMPLATE = `Create a daily logbook based on the session {{ sessionId }}.
 
-## 手順
+## Steps
 
-1. 今日の日付（{{ dateJp }}）を確認する
-2. \`{{ outputDir }}/{{ date }}_logbook.md\` を作成（既存があれば追記・更新）
-3. 作成したファイル名を報告する
+1. Check today's date ({{ dateJp }})
+2. Create \`{{ outputDir }}/{{ date }}_logbook.md\` (append or update if it exists)
+3. Report the created filename
 
-## 注意事項
+## Guidelines
 
-- 既存ファイルがある場合は上書きせず、追記・更新する
-- 日報は短く要点を絞って書く
-- やりとりの要点、決まった方針、次アクションを優先する
-- 事実と意見（推測・評価）は明確に分けて書く`;
+- Do not overwrite existing files; append or update instead
+- Keep the logbook concise and focused on key points
+- Prioritize discussion highlights, decisions made, and next actions
+- Clearly separate facts from opinions (speculation/evaluation)`;
 
 type Logger = PluginInput["client"];
 
@@ -38,24 +38,24 @@ function isPluginDisabled(): boolean {
   return process.env.OPENCODE_DAILY_LOGBOOK_DISABLED === "true";
 }
 
-function formatDateTokens(now: Date): { date: string; dateJp: string } {
+function formatDateTokens(now: Date): { date: string; dateFormatted: string } {
   const year = now.getFullYear();
   const month = now.getMonth() + 1;
   const day = now.getDate();
 
   return {
     date: `${year}${String(month).padStart(2, "0")}${String(day).padStart(2, "0")}`,
-    dateJp: `${year}年${month}月${day}日`,
+    dateFormatted: `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`,
   };
 }
 
 function replaceTemplateVariables(template: string, sessionId: string, now: Date): string {
-  const { date, dateJp } = formatDateTokens(now);
+  const { date, dateFormatted } = formatDateTokens(now);
 
   return template
     .replace(/\{\{\s*sessionId\s*\}\}/g, sessionId)
     .replace(/\{\{\s*date\s*\}\}/g, date)
-    .replace(/\{\{\s*dateJp\s*\}\}/g, dateJp)
+    .replace(/\{\{\s*dateJp\s*\}\}/g, dateFormatted)
     .replace(/\{\{\s*outputDir\s*\}\}/g, getOutputDir());
 }
 
@@ -88,7 +88,7 @@ function truncateText(value: string, maxChars: number): string {
     return value;
   }
 
-  return `${value.slice(0, maxChars)}\n...（長いため省略）`;
+  return `${value.slice(0, maxChars)}\n...(truncated)`;
 }
 
 function extractReadableText(part: { type: string; [key: string]: unknown }): string {
@@ -122,7 +122,7 @@ function buildTranscript(
     .join("\n\n");
 
   if (!transcriptLines) {
-    return "（元セッションに要約可能なテキスト履歴が見つかりませんでした）";
+    return "(No summarizable text history found in the source session)";
   }
 
   return truncateText(transcriptLines, TRANSCRIPT_MAX_CHARS);
@@ -135,7 +135,7 @@ function buildPrompt(template: string, sessionId: string, transcript: string): s
   return `${replacedTemplate}
 
 ---
-以下はセッション ${sessionId} の履歴抜粋です。履歴に基づいて日報を作成してください。
+Below is an excerpt of the session ${sessionId} history. Create the daily logbook based on this history.
 
 ${transcript}`;
 }

@@ -8,6 +8,7 @@ var DUPLICATE_WINDOW_MS = 90000;
 var TRANSCRIPT_MAX_MESSAGES = 80;
 var TRANSCRIPT_MAX_CHARS = 12000;
 var inFlightSessionIds = new Set;
+var dailyLimitInFlightByDate = new Set;
 var recentlyTriggeredAtBySessionId = new Map;
 var DEFAULT_OUTPUT_DIR = "artifacts/daily";
 function getOutputDir() {
@@ -30,7 +31,7 @@ var SAMPLE_TEMPLATE = `Create a daily logbook based on the session {{ sessionId 
 - Clearly separate facts from opinions (speculation/evaluation)`;
 var SECRET_PATTERNS = [
   /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
-  /\bsk-[A-Za-z0-9_-]{8,}\b/g,
+  /\b[sS][kK]-[A-Za-z0-9_-]{8,}\b/g,
   /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi,
   /\bAKIA[0-9A-Z]{16}\b/g,
   /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g,
@@ -78,9 +79,9 @@ function formatDateTokens(now) {
     dateJp: `${year}\u5E74${month}\u6708${day}\u65E5`
   };
 }
-function replaceTemplateVariables(template, sessionId, now) {
+function replaceTemplateVariables(template, sessionId, now, outputDir) {
   const { date, dateJp } = formatDateTokens(now);
-  return template.replace(/\{\{\s*sessionId\s*\}\}/g, sessionId).replace(/\{\{\s*date\s*\}\}/g, date).replace(/\{\{\s*dateJp\s*\}\}/g, dateJp).replace(/\{\{\s*outputDir\s*\}\}/g, getOutputDir());
+  return template.replace(/\{\{\s*sessionId\s*\}\}/g, sessionId).replace(/\{\{\s*date\s*\}\}/g, date).replace(/\{\{\s*dateJp\s*\}\}/g, dateJp).replace(/\{\{\s*outputDir\s*\}\}/g, outputDir);
 }
 function loadTemplate(directory) {
   const customTemplatePath = process.env.OPENCODE_DAILY_LOGBOOK_TEMPLATE;
@@ -134,9 +135,9 @@ ${text}`;
   const maskedTranscript = isRedactEnabled() ? maskSecrets(transcriptLines) : transcriptLines;
   return truncateText(maskedTranscript, TRANSCRIPT_MAX_CHARS);
 }
-function buildPrompt(template, sessionId, transcript, includeTranscript) {
+function buildPrompt(template, sessionId, transcript, includeTranscript, outputDir) {
   const now = new Date;
-  const replacedTemplate = replaceTemplateVariables(template, sessionId, now);
+  const replacedTemplate = replaceTemplateVariables(template, sessionId, now, outputDir);
   if (!includeTranscript || !transcript) {
     return replacedTemplate;
   }
@@ -202,7 +203,17 @@ var DailyLogbookPlugin = async ({ client, directory }) => {
       if (inFlightSessionIds.has(originalSessionId) || isDuplicateTrigger(originalSessionId, nowMs, throttleWindowMs)) {
         return;
       }
+      const date = formatDateTokens(new Date).date;
+      const outputDir = getOutputDir();
+      const isDailyLimited = isDailyLimitEnabled();
+      if (isDailyLimited && dailyLimitInFlightByDate.has(date)) {
+        await logWarn(client, `Daily logbook for ${date} is already being generated. Skipping (OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT=true).`);
+        return;
+      }
       inFlightSessionIds.add(originalSessionId);
+      if (isDailyLimited) {
+        dailyLimitInFlightByDate.add(date);
+      }
       try {
         const currentSessionResult = await client.session.get({
           path: { id: originalSessionId }
@@ -215,12 +226,11 @@ var DailyLogbookPlugin = async ({ client, directory }) => {
         if (currentSessionTitle.startsWith(GENERATED_TITLE_PREFIX)) {
           return;
         }
-        const date = formatDateTokens(new Date).date;
-        if (isDailyLimitEnabled()) {
+        if (isDailyLimited) {
           const customTemplatePath = process.env.OPENCODE_DAILY_LOGBOOK_TEMPLATE;
           if (customTemplatePath) {
             await logWarn(client, "OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT is not supported together with OPENCODE_DAILY_LOGBOOK_TEMPLATE (file name pattern is unknown). Daily limit check is skipped.");
-          } else if (isDailyLogbookExists(directory, getOutputDir(), date)) {
+          } else if (isDailyLogbookExists(directory, outputDir, date)) {
             await logWarn(client, `Daily logbook for ${date} already exists. Skipping generation (OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT=true).`);
             return;
           }
@@ -242,10 +252,11 @@ var DailyLogbookPlugin = async ({ client, directory }) => {
         }
         const includeTranscript = isTranscriptIncluded();
         const transcript = includeTranscript ? buildTranscript(messagesResult.data) : "";
-        const prompt = buildPrompt(template, originalSessionId, transcript, includeTranscript);
+        const promptOutputDir = isDailyLimited ? resolve(directory, outputDir) : outputDir;
+        const prompt = buildPrompt(template, originalSessionId, transcript, includeTranscript, promptOutputDir);
         const generatedSessionResult = await client.session.create({
           body: {
-            title: `${GENERATED_TITLE_PREFIX} ${formatDateTokens(new Date).date}`
+            title: `${GENERATED_TITLE_PREFIX} ${date}`
           }
         });
         if (generatedSessionResult.error) {
@@ -273,6 +284,9 @@ var DailyLogbookPlugin = async ({ client, directory }) => {
         await logError(client, "Unhandled error while generating daily logbook", error);
       } finally {
         inFlightSessionIds.delete(originalSessionId);
+        if (isDailyLimited) {
+          dailyLimitInFlightByDate.delete(date);
+        }
       }
     }
   };

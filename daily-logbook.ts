@@ -9,6 +9,10 @@ const TRANSCRIPT_MAX_MESSAGES = 80;
 const TRANSCRIPT_MAX_CHARS = 12_000;
 
 const inFlightSessionIds = new Set<string>();
+// daily-limit 有効時のみ使う日付キーの in-flight ガード。
+// inFlightSessionIds はセッション単位のため、別セッションが同時に idle すると
+// 両方が存在チェックを通過して二重生成され得る。日付キーでそれを防ぐ。
+const dailyLimitInFlightByDate = new Set<string>();
 const recentlyTriggeredAtBySessionId = new Map<string, number>();
 
 const DEFAULT_OUTPUT_DIR = "artifacts/daily";
@@ -38,7 +42,7 @@ const SAMPLE_TEMPLATE = `Create a daily logbook based on the session {{ sessionI
 // ブロックの一部だけがマスクされ、鍵の中身が残ってしまう。
 const SECRET_PATTERNS: RegExp[] = [
   /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
-  /\bsk-[A-Za-z0-9_-]{8,}\b/g, // OpenAI-style keys (sk-..., sk-ant-...)
+  /\b[sS][kK]-[A-Za-z0-9_-]{8,}\b/g, // OpenAI-style keys (sk-.../SK-.../sk-ant-...)
   /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, // Authorization: Bearer <token>
   /\bAKIA[0-9A-Z]{16}\b/g, // AWS access key IDs
   /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, // GitHub tokens (ghp_/gho_/ghu_/ghs_/ghr_)
@@ -112,14 +116,14 @@ function formatDateTokens(now: Date): { date: string; dateJp: string } {
   };
 }
 
-function replaceTemplateVariables(template: string, sessionId: string, now: Date): string {
+function replaceTemplateVariables(template: string, sessionId: string, now: Date, outputDir: string): string {
   const { date, dateJp } = formatDateTokens(now);
 
   return template
     .replace(/\{\{\s*sessionId\s*\}\}/g, sessionId)
     .replace(/\{\{\s*date\s*\}\}/g, date)
     .replace(/\{\{\s*dateJp\s*\}\}/g, dateJp)
-    .replace(/\{\{\s*outputDir\s*\}\}/g, getOutputDir());
+    .replace(/\{\{\s*outputDir\s*\}\}/g, outputDir);
 }
 
 function loadTemplate(directory: string): string {
@@ -200,9 +204,10 @@ function buildPrompt(
   sessionId: string,
   transcript: string,
   includeTranscript: boolean,
+  outputDir: string,
 ): string {
   const now = new Date();
-  const replacedTemplate = replaceTemplateVariables(template, sessionId, now);
+  const replacedTemplate = replaceTemplateVariables(template, sessionId, now, outputDir);
 
   // INCLUDE_TRANSCRIPT=false 時は transcript セクションごと省く。
   // REDACT の設定に関わらず transcript 自体が prompt に入らない。
@@ -302,7 +307,27 @@ export const DailyLogbookPlugin: Plugin = async ({ client, directory }) => {
         return;
       }
 
+      // 日付・出力先はこのイベント処理全体で1回だけ解決し、daily-limit の
+      // 存在チェック・プロンプト・タイトル生成で同じ値を使い回す。
+      const date = formatDateTokens(new Date()).date;
+      const outputDir = getOutputDir();
+      const isDailyLimited = isDailyLimitEnabled();
+
+      // daily-limit 有効時のみ、日付キーのグローバル in-flight ガードを確認する。
+      // 別セッションが同時に idle した場合、両方が存在チェックを通過すると
+      // 同日付の生成が二重に走ってしまうため、ここで抑制する。
+      if (isDailyLimited && dailyLimitInFlightByDate.has(date)) {
+        await logWarn(
+          client,
+          `Daily logbook for ${date} is already being generated. Skipping (OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT=true).`,
+        );
+        return;
+      }
+
       inFlightSessionIds.add(originalSessionId);
+      if (isDailyLimited) {
+        dailyLimitInFlightByDate.add(date);
+      }
 
       try {
         const currentSessionResult = await client.session.get({
@@ -319,19 +344,17 @@ export const DailyLogbookPlugin: Plugin = async ({ client, directory }) => {
           return;
         }
 
-        const date = formatDateTokens(new Date()).date;
-
         // daily-limit: 既定ファイル名が既に存在すれば当日中の再生成をスキップする。
         // ファイルベース判定のためプロセス再起動を跨いで機能する。
         // カスタムテンプレート使用時はファイル名パターンが変わって判定不能になるため非対応。
-        if (isDailyLimitEnabled()) {
+        if (isDailyLimited) {
           const customTemplatePath = process.env.OPENCODE_DAILY_LOGBOOK_TEMPLATE;
           if (customTemplatePath) {
             await logWarn(
               client,
               "OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT is not supported together with OPENCODE_DAILY_LOGBOOK_TEMPLATE (file name pattern is unknown). Daily limit check is skipped.",
             );
-          } else if (isDailyLogbookExists(directory, getOutputDir(), date)) {
+          } else if (isDailyLogbookExists(directory, outputDir, date)) {
             await logWarn(
               client,
               `Daily logbook for ${date} already exists. Skipping generation (OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT=true).`,
@@ -363,11 +386,16 @@ export const DailyLogbookPlugin: Plugin = async ({ client, directory }) => {
 
         const includeTranscript = isTranscriptIncluded();
         const transcript = includeTranscript ? buildTranscript(messagesResult.data) : "";
-        const prompt = buildPrompt(template, originalSessionId, transcript, includeTranscript);
+
+        // daily-limit 有効時は、エージェント（別プロセス）が CWD 基準でファイルを
+        // 書くため、存在チェックと同じ `directory` 基準の絶対パスを prompt に渡す。
+        // 無効時は従来どおり相対文字列を渡す（後方互換）。
+        const promptOutputDir = isDailyLimited ? resolve(directory, outputDir) : outputDir;
+        const prompt = buildPrompt(template, originalSessionId, transcript, includeTranscript, promptOutputDir);
 
         const generatedSessionResult = await client.session.create({
           body: {
-            title: `${GENERATED_TITLE_PREFIX} ${formatDateTokens(new Date()).date}`,
+            title: `${GENERATED_TITLE_PREFIX} ${date}`,
           },
         });
 
@@ -400,6 +428,9 @@ export const DailyLogbookPlugin: Plugin = async ({ client, directory }) => {
         await logError(client, "Unhandled error while generating daily logbook", error);
       } finally {
         inFlightSessionIds.delete(originalSessionId);
+        if (isDailyLimited) {
+          dailyLimitInFlightByDate.delete(date);
+        }
       }
     },
   };

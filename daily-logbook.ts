@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Plugin, PluginInput } from "@opencode-ai/plugin";
 
@@ -30,7 +30,35 @@ const SAMPLE_TEMPLATE = `Create a daily logbook based on the session {{ sessionI
 - Do not overwrite existing files; append or update instead
 - Keep the logbook concise and focused on key points
 - Prioritize discussion highlights, decisions made, and next actions
+- If the session contains mixed Japanese/English, prefer English in the logbook
 - Clearly separate facts from opinions (speculation/evaluation)`;
+
+// 既知のシークレットパターン。置換は配列の順序で行う。
+// 秘密鍵ブロックは複数行にまたがるため、他のパターンより先に処理しないと
+// ブロックの一部だけがマスクされ、鍵の中身が残ってしまう。
+const SECRET_PATTERNS: RegExp[] = [
+  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
+  /\bsk-[A-Za-z0-9_-]{8,}\b/g, // OpenAI-style keys (sk-..., sk-ant-...)
+  /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, // Authorization: Bearer <token>
+  /\bAKIA[0-9A-Z]{16}\b/g, // AWS access key IDs
+  /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, // GitHub tokens (ghp_/gho_/ghu_/ghs_/ghr_)
+  /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, // Slack tokens (xoxb-, xoxa-, xoxp-, ...)
+  /(?:password|passwd|pwd|secret|client[_-]?secret|api[_-]?key|apikey|access[_-]?token|refresh[_-]?token)\s*[:=]\s*\S+/gi,
+];
+
+/**
+ * 既知のシークレットパターンを `***` に置換する。
+ *
+ * これは「転送事故を減らす」ためのフェイルセーフであり、完全な秘密保護を
+ * 保証するものではない。機密情報を prompt に含めない運用が前提。
+ */
+export function maskSecrets(value: string): string {
+  let masked = value;
+  for (const pattern of SECRET_PATTERNS) {
+    masked = masked.replace(pattern, "***");
+  }
+  return masked;
+}
 
 type Logger = PluginInput["client"];
 
@@ -38,24 +66,54 @@ function isPluginDisabled(): boolean {
   return process.env.OPENCODE_DAILY_LOGBOOK_DISABLED === "true";
 }
 
-function formatDateTokens(now: Date): { date: string; dateFormatted: string } {
+function isRedactEnabled(): boolean {
+  // 既定で有効（フェイルセーフ）。無効化は "false" の厳密一致のみ受け付ける。
+  return process.env.OPENCODE_DAILY_LOGBOOK_REDACT !== "false";
+}
+
+function isTranscriptIncluded(): boolean {
+  // 既定で埋め込み。無効化は "false" の厳密一致のみ受け付ける。
+  return process.env.OPENCODE_DAILY_LOGBOOK_INCLUDE_TRANSCRIPT !== "false";
+}
+
+function isDailyLimitEnabled(): boolean {
+  // 既定で無効。有効化は "true" の厳密一致のみ（既存 DISABLED と同じ規約）。
+  return process.env.OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT === "true";
+}
+
+export function getThrottleWindowMs(): number {
+  const rawValue = process.env.OPENCODE_DAILY_LOGBOOK_THROTTLE_MS;
+  if (rawValue === undefined || rawValue === "") {
+    return DUPLICATE_WINDOW_MS;
+  }
+
+  const parsedMs = Number.parseInt(rawValue, 10);
+  // 整数として解釈できない値・負値は意味のある設定ではないため既定（後方互換）にフォールバック。
+  if (Number.isNaN(parsedMs) || parsedMs < 0) {
+    return DUPLICATE_WINDOW_MS;
+  }
+
+  return parsedMs;
+}
+
+function formatDateTokens(now: Date): { date: string; dateJp: string } {
   const year = now.getFullYear();
   const month = now.getMonth() + 1;
   const day = now.getDate();
 
   return {
     date: `${year}${String(month).padStart(2, "0")}${String(day).padStart(2, "0")}`,
-    dateFormatted: `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`,
+    dateJp: `${year}年${month}月${day}日`,
   };
 }
 
 function replaceTemplateVariables(template: string, sessionId: string, now: Date): string {
-  const { date, dateFormatted } = formatDateTokens(now);
+  const { date, dateJp } = formatDateTokens(now);
 
   return template
     .replace(/\{\{\s*sessionId\s*\}\}/g, sessionId)
     .replace(/\{\{\s*date\s*\}\}/g, date)
-    .replace(/\{\{\s*dateJp\s*\}\}/g, dateFormatted)
+    .replace(/\{\{\s*dateJp\s*\}\}/g, dateJp)
     .replace(/\{\{\s*outputDir\s*\}\}/g, getOutputDir());
 }
 
@@ -99,7 +157,7 @@ function extractReadableText(part: { type: string; [key: string]: unknown }): st
   return "";
 }
 
-function buildTranscript(
+export function buildTranscript(
   messages: Array<{ info: { role: "user" | "assistant" }; parts: Array<{ type: string; [key: string]: unknown }> }>,
 ): string {
   const recentMessages = messages.slice(-TRANSCRIPT_MAX_MESSAGES);
@@ -125,12 +183,27 @@ function buildTranscript(
     return "(No summarizable text history found in the source session)";
   }
 
-  return truncateText(transcriptLines, TRANSCRIPT_MAX_CHARS);
+  // マスキングは truncate の前に行う。
+  // truncate 後に適用すると切り口でシークレットが分割され、マスク漏れするため。
+  const maskedTranscript = isRedactEnabled() ? maskSecrets(transcriptLines) : transcriptLines;
+
+  return truncateText(maskedTranscript, TRANSCRIPT_MAX_CHARS);
 }
 
-function buildPrompt(template: string, sessionId: string, transcript: string): string {
+function buildPrompt(
+  template: string,
+  sessionId: string,
+  transcript: string,
+  includeTranscript: boolean,
+): string {
   const now = new Date();
   const replacedTemplate = replaceTemplateVariables(template, sessionId, now);
+
+  // INCLUDE_TRANSCRIPT=false 時は transcript セクションごと省く。
+  // REDACT の設定に関わらず transcript 自体が prompt に入らない。
+  if (!includeTranscript || !transcript) {
+    return replacedTemplate;
+  }
 
   return `${replacedTemplate}
 
@@ -156,21 +229,44 @@ async function logError(client: Logger, message: string, error: unknown): Promis
   }
 }
 
-function isDuplicateTrigger(sessionId: string, nowMs: number): boolean {
-  const lastTriggeredAt = recentlyTriggeredAtBySessionId.get(sessionId);
-  if (!lastTriggeredAt) {
+/**
+ * 前回トリガーから `windowMs` 以内かどうかの純粋述語。
+ * モジュール内 Map に依存しないため、単体テストが容易。
+ */
+export function isWithinWindow(
+  lastTriggeredAt: number | undefined,
+  nowMs: number,
+  windowMs: number,
+): boolean {
+  if (lastTriggeredAt === undefined) {
     return false;
   }
 
-  return nowMs - lastTriggeredAt < DUPLICATE_WINDOW_MS;
+  return nowMs - lastTriggeredAt < windowMs;
 }
 
-function pruneExpiredGuards(nowMs: number): void {
+function isDuplicateTrigger(sessionId: string, nowMs: number, windowMs: number): boolean {
+  return isWithinWindow(recentlyTriggeredAtBySessionId.get(sessionId), nowMs, windowMs);
+}
+
+function pruneExpiredGuards(nowMs: number, windowMs: number): void {
   for (const [sessionId, timestamp] of recentlyTriggeredAtBySessionId.entries()) {
-    if (nowMs - timestamp >= DUPLICATE_WINDOW_MS * 2) {
+    if (nowMs - timestamp >= windowMs * 2) {
       recentlyTriggeredAtBySessionId.delete(sessionId);
     }
   }
+}
+
+/**
+ * 既定ファイル名 `{{ outputDir }}/{{ date }}_logbook.md` が既に存在するかを
+ * ファイルベースで判定する（プロセス再起動を跨いで機能する）。
+ *
+ * パス解決は loadTemplate と同じく `directory`（プラグイン起動ディレクトリ）
+ * 基準。CWD に依存しないため、どのディレクトリから起動しても一貫する。
+ */
+export function isDailyLogbookExists(directory: string, outputDir: string, date: string): boolean {
+  const dailyLogbookPath = resolve(directory, outputDir, `${date}_logbook.md`);
+  return existsSync(dailyLogbookPath);
 }
 
 export const DailyLogbookPlugin: Plugin = async ({ client, directory }) => {
@@ -194,9 +290,10 @@ export const DailyLogbookPlugin: Plugin = async ({ client, directory }) => {
 
       const originalSessionId = event.properties.sessionID;
       const nowMs = Date.now();
-      pruneExpiredGuards(nowMs);
+      const throttleWindowMs = getThrottleWindowMs();
+      pruneExpiredGuards(nowMs, throttleWindowMs);
 
-      if (inFlightSessionIds.has(originalSessionId) || isDuplicateTrigger(originalSessionId, nowMs)) {
+      if (inFlightSessionIds.has(originalSessionId) || isDuplicateTrigger(originalSessionId, nowMs, throttleWindowMs)) {
         return;
       }
 
@@ -215,6 +312,27 @@ export const DailyLogbookPlugin: Plugin = async ({ client, directory }) => {
         const currentSessionTitle = currentSessionResult.data.title ?? "";
         if (currentSessionTitle.startsWith(GENERATED_TITLE_PREFIX)) {
           return;
+        }
+
+        const date = formatDateTokens(new Date()).date;
+
+        // daily-limit: 既定ファイル名が既に存在すれば当日中の再生成をスキップする。
+        // ファイルベース判定のためプロセス再起動を跨いで機能する。
+        // カスタムテンプレート使用時はファイル名パターンが変わって判定不能になるため非対応。
+        if (isDailyLimitEnabled()) {
+          const customTemplatePath = process.env.OPENCODE_DAILY_LOGBOOK_TEMPLATE;
+          if (customTemplatePath) {
+            await logWarn(
+              client,
+              "OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT is not supported together with OPENCODE_DAILY_LOGBOOK_TEMPLATE (file name pattern is unknown). Daily limit check is skipped.",
+            );
+          } else if (isDailyLogbookExists(directory, getOutputDir(), date)) {
+            await logWarn(
+              client,
+              `Daily logbook for ${date} already exists. Skipping generation (OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT=true).`,
+            );
+            return;
+          }
         }
 
         let template = SAMPLE_TEMPLATE;
@@ -238,8 +356,9 @@ export const DailyLogbookPlugin: Plugin = async ({ client, directory }) => {
           return;
         }
 
-        const transcript = buildTranscript(messagesResult.data);
-        const prompt = buildPrompt(template, originalSessionId, transcript);
+        const includeTranscript = isTranscriptIncluded();
+        const transcript = includeTranscript ? buildTranscript(messagesResult.data) : "";
+        const prompt = buildPrompt(template, originalSessionId, transcript, includeTranscript);
 
         const generatedSessionResult = await client.session.create({
           body: {

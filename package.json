@@ -1,6 +1,6 @@
 {
   "name": "opencode-autopilot-logbook",
-  "version": "1.0.9",
+  "version": "1.1.0",
   "description": "OpenCode plugin that auto-generates daily reports on session idle",
   "type": "module",
   "main": "dist/index.js",
@@ -11,8 +11,9 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "build": "bun build daily-logbook.ts --outdir dist --target=bun --outfile index.js",
-    "prepublishOnly": "bun run build"
+    "build": "bun build daily-logbook.ts --target=bun --outfile dist/index.js",
+    "prepublishOnly": "bun run build",
+    "test": "bun test"
   },
   "engines": {
     "node": ">=18.0.0"

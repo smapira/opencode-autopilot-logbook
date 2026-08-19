@@ -135,8 +135,7 @@ ${text}`;
   const maskedTranscript = isRedactEnabled() ? maskSecrets(transcriptLines) : transcriptLines;
   return truncateText(maskedTranscript, TRANSCRIPT_MAX_CHARS);
 }
-function buildPrompt(template, sessionId, transcript, includeTranscript, outputDir) {
-  const now = new Date;
+function buildPrompt(template, sessionId, transcript, includeTranscript, outputDir, now) {
   const replacedTemplate = replaceTemplateVariables(template, sessionId, now, outputDir);
   if (!includeTranscript || !transcript) {
     return replacedTemplate;
@@ -203,7 +202,8 @@ var DailyLogbookPlugin = async ({ client, directory }) => {
       if (inFlightSessionIds.has(originalSessionId) || isDuplicateTrigger(originalSessionId, nowMs, throttleWindowMs)) {
         return;
       }
-      const date = formatDateTokens(new Date).date;
+      const now = new Date;
+      const { date } = formatDateTokens(now);
       const outputDir = getOutputDir();
       const isDailyLimited = isDailyLimitEnabled();
       if (isDailyLimited && dailyLimitInFlightByDate.has(date)) {
@@ -253,7 +253,7 @@ var DailyLogbookPlugin = async ({ client, directory }) => {
         const includeTranscript = isTranscriptIncluded();
         const transcript = includeTranscript ? buildTranscript(messagesResult.data) : "";
         const promptOutputDir = isDailyLimited ? resolve(directory, outputDir) : outputDir;
-        const prompt = buildPrompt(template, originalSessionId, transcript, includeTranscript, promptOutputDir);
+        const prompt = buildPrompt(template, originalSessionId, transcript, includeTranscript, promptOutputDir, now);
         const generatedSessionResult = await client.session.create({
           body: {
             title: `${GENERATED_TITLE_PREFIX} ${date}`
@@ -299,5 +299,6 @@ export {
   getThrottleWindowMs,
   daily_logbook_default as default,
   buildTranscript,
+  buildPrompt,
   DailyLogbookPlugin
 };

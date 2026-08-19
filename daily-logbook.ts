@@ -199,14 +199,21 @@ export function buildTranscript(
   return truncateText(maskedTranscript, TRANSCRIPT_MAX_CHARS);
 }
 
-function buildPrompt(
+/**
+ * テンプレートに transcript を付加して prompt を組み立てる。
+ *
+ * `now` はイベントハンドラで解決した時刻を注入する。内部で `new Date()` を
+ * 再実行しないことで、0 時跨ぎに `{{ date }}` が存在チェック・タイトルと
+ * 別の日付へずれることを防ぐ（daily-limit の日付キーを 1 回に統一する）。
+ */
+export function buildPrompt(
   template: string,
   sessionId: string,
   transcript: string,
   includeTranscript: boolean,
   outputDir: string,
+  now: Date,
 ): string {
-  const now = new Date();
   const replacedTemplate = replaceTemplateVariables(template, sessionId, now, outputDir);
 
   // INCLUDE_TRANSCRIPT=false 時は transcript セクションごと省く。
@@ -309,7 +316,10 @@ export const DailyLogbookPlugin: Plugin = async ({ client, directory }) => {
 
       // 日付・出力先はこのイベント処理全体で1回だけ解決し、daily-limit の
       // 存在チェック・プロンプト・タイトル生成で同じ値を使い回す。
-      const date = formatDateTokens(new Date()).date;
+      // `now` をそのまま buildPrompt へ渡すことで、0 時跨ぎでも prompt 内の
+      // 日付が存在チェック・タイトルと一致し続ける。
+      const now = new Date();
+      const { date } = formatDateTokens(now);
       const outputDir = getOutputDir();
       const isDailyLimited = isDailyLimitEnabled();
 
@@ -391,7 +401,7 @@ export const DailyLogbookPlugin: Plugin = async ({ client, directory }) => {
         // 書くため、存在チェックと同じ `directory` 基準の絶対パスを prompt に渡す。
         // 無効時は従来どおり相対文字列を渡す（後方互換）。
         const promptOutputDir = isDailyLimited ? resolve(directory, outputDir) : outputDir;
-        const prompt = buildPrompt(template, originalSessionId, transcript, includeTranscript, promptOutputDir);
+        const prompt = buildPrompt(template, originalSessionId, transcript, includeTranscript, promptOutputDir, now);
 
         const generatedSessionResult = await client.session.create({
           body: {

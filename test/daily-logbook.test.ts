@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import {
+  buildPrompt,
   buildTranscript,
   getThrottleWindowMs,
   isDailyLogbookExists,
@@ -223,6 +224,43 @@ describe("isDailyLogbookExists", () => {
   });
 });
 
+describe("buildPrompt", () => {
+  test("uses the injected date instead of re-resolving the clock", () => {
+    // 0 時跨ぎの再現: イベントハンドラで解決した 23:59:59 の日付を注入しても、
+    // prompt 内の {{ date }} / {{ dateJp }} は注入された日付のまま再解決されない。
+    // 実装が内部で `new Date()` を呼ぶと今日の日付（20260819）に化けるため、
+    // 今日と異なる日付（20260105）で固定して回帰を検出する。
+    const fixedNow = new Date(2026, 0, 5, 23, 59, 59); // 2026-01-05 23:59:59（ローカル時刻）
+    const template = "Session {{ sessionId }} | date={{ date }} | dateJp={{ dateJp }} | dir={{ outputDir }}";
+
+    const prompt = buildPrompt(template, "sess-1", "", false, "artifacts/daily", fixedNow);
+
+    expect(prompt).toContain("date=20260105");
+    expect(prompt).toContain("dateJp=2026年1月5日");
+    expect(prompt).toContain("Session sess-1");
+    expect(prompt).toContain("dir=artifacts/daily");
+  });
+
+  test("appends the transcript section when includeTranscript is true", () => {
+    const fixedNow = new Date(2026, 0, 5, 23, 59, 59);
+    const template = "Session {{ sessionId }} | date={{ date }}";
+
+    const prompt = buildPrompt(template, "sess-1", "[User]\nhello", true, "artifacts/daily", fixedNow);
+
+    expect(prompt).toContain("[User]\nhello");
+    expect(prompt).toContain("Below is an excerpt of the session sess-1 history.");
+  });
+
+  test("omits the transcript section when includeTranscript is false", () => {
+    const fixedNow = new Date(2026, 0, 5, 23, 59, 59);
+    const template = "Session {{ sessionId }} | date={{ date }}";
+
+    const prompt = buildPrompt(template, "sess-1", "[User]\nhello", false, "artifacts/daily", fixedNow);
+
+    expect(prompt).not.toContain("[User]\nhello");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // プラグインの event フックをモッククライアントで駆動する統合テスト。
 // モジュールレベルの in-flight ガード（inFlightSessionIds /
@@ -275,21 +313,69 @@ type MockClient = {
   };
 };
 
-function createMockClient(gatePrompt?: () => Promise<void>) {
+// 各 API 呼び出しで「error を返す」または「例外を投げる」失敗経路を再現する。
+// プラグインの finally クリーンアップ（in-flight ガード解除）を検証するために使う。
+type MockFailure = {
+  path: "get" | "messages" | "create" | "promptAsync";
+  mode: "error" | "throw";
+};
+
+function createMockClient(options: { gatePrompt?: () => Promise<void>; failure?: MockFailure } = {}) {
   const promptTexts: string[] = [];
   let promptCount = 0;
+  const mockError = new Error("mock failure");
+  // failure は 1 回だけ発火させる（ワンショット）。エラー経路テストでは
+  // 1 回目のイベントだけ失敗させ、2 回目のイベントが生成を通過できることを
+  // 検証したいため、以降の呼び出しは正常系に戻す。
+  const failureFired = new Set<MockFailure["path"]>();
+
+  const failWith = <T>(path: MockFailure["path"], onError: () => T, onContinue: () => T): T => {
+    if (options.failure?.path === path && !failureFired.has(path)) {
+      failureFired.add(path);
+      if (options.failure.mode === "throw") {
+        throw mockError;
+      }
+      return onError();
+    }
+    return onContinue();
+  };
 
   const client: MockClient = {
     app: { log: async () => {} },
     session: {
-      get: async () => ({ data: { id: "src-session", title: "test session" }, error: undefined }),
-      messages: async () => ({ data: [], error: undefined }),
-      create: async () => ({ data: { id: "generated-session" }, error: undefined }),
+      get: () =>
+        failWith(
+          "get",
+          () => ({ data: undefined as never, error: mockError }),
+          () => ({ data: { id: "src-session", title: "test session" }, error: undefined }),
+        ),
+      messages: () =>
+        failWith(
+          "messages",
+          () => ({ data: undefined as never, error: mockError }),
+          () => ({ data: [], error: undefined }),
+        ),
+      create: () =>
+        failWith(
+          "create",
+          () => ({ data: undefined as never, error: mockError }),
+          () => ({ data: { id: "generated-session" }, error: undefined }),
+        ),
+      // promptAsync は失敗経路を先に判定する。失敗した prompt は「送出済み」に
+      // 数えないため、エラー経路テストで成功回数（= ガード解除後の生成通過）を
+      // 一貫して `getPromptCount()` で検証できる。
       promptAsync: async (input) => {
+        if (options.failure?.path === "promptAsync" && !failureFired.has("promptAsync")) {
+          failureFired.add("promptAsync");
+          if (options.failure.mode === "throw") {
+            throw mockError;
+          }
+          return { data: undefined, error: mockError };
+        }
         promptCount += 1;
         promptTexts.push(input.body.parts[0].text);
-        if (gatePrompt) {
-          await gatePrompt();
+        if (options.gatePrompt) {
+          await options.gatePrompt();
         }
         return { data: {}, error: undefined };
       },
@@ -299,8 +385,11 @@ function createMockClient(gatePrompt?: () => Promise<void>) {
   return { client, promptTexts, getPromptCount: () => promptCount };
 }
 
-async function createPluginHarness(directory: string, gatePrompt?: () => Promise<void>) {
-  const { client, promptTexts, getPromptCount } = createMockClient(gatePrompt);
+async function createPluginHarness(
+  directory: string,
+  options: { gatePrompt?: () => Promise<void>; failure?: MockFailure } = {},
+) {
+  const { client, promptTexts, getPromptCount } = createMockClient(options);
 
   const plugin = await DailyLogbookPlugin({
     client,
@@ -348,9 +437,11 @@ describe("DailyLogbookPlugin daily-limit integration", () => {
       releaseFirst = release;
     });
     let gateCount = 0;
-    const { eventHandler, getPromptCount } = await createPluginHarness(tempDir, () => {
-      gateCount += 1;
-      return gateCount === 1 ? firstPromptGate : Promise.resolve();
+    const { eventHandler, getPromptCount } = await createPluginHarness(tempDir, {
+      gatePrompt: () => {
+        gateCount += 1;
+        return gateCount === 1 ? firstPromptGate : Promise.resolve();
+      },
     });
 
     const firstCall = idleEvent(eventHandler, "session-a");
@@ -412,5 +503,56 @@ describe("DailyLogbookPlugin daily-limit integration", () => {
     const prompt = promptTexts[0];
     expect(prompt).toContain("artifacts/daily");
     expect(prompt).not.toContain(resolve(tempDir, "artifacts", "daily"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// エラー経路での in-flight ガード解除を検証する統合テスト。
+// dailyLimitInFlightByDate の finally クリーンアップが失われると、エラー後の
+// 当日中すべてのセッション生成がプロセス再起動まで永久ブロックされるため、
+// 各エラー経路ごとに「エラー後の別セッションが生成を通過できる」ことを確認する。
+// ---------------------------------------------------------------------------
+
+describe("DailyLogbookPlugin error-path guard release", () => {
+  let tempDir: string;
+  let envSnapshot: Array<[string, string | undefined]>;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "logbook-plugin-test-"));
+    envSnapshot = snapshotPluginEnv();
+    process.env[DAILY_LIMIT_ENV] = "true";
+    process.env[THROTTLE_ENV] = "0";
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+    restorePluginEnv(envSnapshot);
+  });
+
+  const errorPaths: MockFailure["path"][] = ["get", "messages", "create", "promptAsync"];
+
+  test.each(errorPaths)("releases the daily-limit guard after a %s error so a later session can generate", async (path) => {
+    const { eventHandler, getPromptCount } = await createPluginHarness(tempDir, {
+      failure: { path, mode: "error" },
+    });
+
+    // 1 回目: エラー経路でガードが設定された後、finally で解除される。
+    await idleEvent(eventHandler, "session-a");
+
+    // 2 回目: 別セッションが生成を通過できる（ガードが解除されている）。
+    await idleEvent(eventHandler, "session-b");
+
+    expect(getPromptCount()).toBe(1);
+  });
+
+  test.each(errorPaths)("releases the daily-limit guard after a %s throw so a later session can generate", async (path) => {
+    const { eventHandler, getPromptCount } = await createPluginHarness(tempDir, {
+      failure: { path, mode: "throw" },
+    });
+
+    await idleEvent(eventHandler, "session-a");
+    await idleEvent(eventHandler, "session-b");
+
+    expect(getPromptCount()).toBe(1);
   });
 });

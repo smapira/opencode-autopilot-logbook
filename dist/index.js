@@ -1,6 +1,6 @@
 // @bun
-// .github/plugins/daily-logbook.ts
-import { readFileSync } from "fs";
+// daily-logbook.ts
+import { existsSync, readFileSync } from "fs";
 import { resolve } from "path";
 var SERVICE_NAME = "daily-logbook-plugin";
 var GENERATED_TITLE_PREFIX = "[daily-logbook:auto]";
@@ -13,22 +13,59 @@ var DEFAULT_OUTPUT_DIR = "artifacts/daily";
 function getOutputDir() {
   return process.env.OPENCODE_DAILY_LOGBOOK_OUTPUT_DIR || DEFAULT_OUTPUT_DIR;
 }
-var SAMPLE_TEMPLATE = `\u30BB\u30C3\u30B7\u30E7\u30F3 {{ sessionId }} \u306E\u5185\u5BB9\u3092\u5143\u306B\u3001\u65E5\u5831\u3092\u4F5C\u6210\u3057\u3066\u304F\u3060\u3055\u3044\u3002
+var SAMPLE_TEMPLATE = `Create a daily logbook based on the session {{ sessionId }}.
 
-## \u624B\u9806
+## Steps
 
-1. \u4ECA\u65E5\u306E\u65E5\u4ED8\uFF08{{ dateJp }}\uFF09\u3092\u78BA\u8A8D\u3059\u308B
-2. \`{{ outputDir }}/{{ date }}_logbook.md\` \u3092\u4F5C\u6210\uFF08\u65E2\u5B58\u304C\u3042\u308C\u3070\u8FFD\u8A18\u30FB\u66F4\u65B0\uFF09
-3. \u4F5C\u6210\u3057\u305F\u30D5\u30A1\u30A4\u30EB\u540D\u3092\u5831\u544A\u3059\u308B
+1. Check today's date ({{ dateJp }})
+2. Create \`{{ outputDir }}/{{ date }}_logbook.md\` (append or update if it exists)
+3. Report the created filename
 
-## \u6CE8\u610F\u4E8B\u9805
+## Guidelines
 
-- \u65E2\u5B58\u30D5\u30A1\u30A4\u30EB\u304C\u3042\u308B\u5834\u5408\u306F\u4E0A\u66F8\u304D\u305B\u305A\u3001\u8FFD\u8A18\u30FB\u66F4\u65B0\u3059\u308B
-- \u65E5\u5831\u306F\u77ED\u304F\u8981\u70B9\u3092\u7D5E\u3063\u3066\u66F8\u304F
-- \u3084\u308A\u3068\u308A\u306E\u8981\u70B9\u3001\u6C7A\u307E\u3063\u305F\u65B9\u91DD\u3001\u6B21\u30A2\u30AF\u30B7\u30E7\u30F3\u3092\u512A\u5148\u3059\u308B
-- \u4E8B\u5B9F\u3068\u610F\u898B\uFF08\u63A8\u6E2C\u30FB\u8A55\u4FA1\uFF09\u306F\u660E\u78BA\u306B\u5206\u3051\u3066\u66F8\u304F`;
+- Do not overwrite existing files; append or update instead
+- Keep the logbook concise and focused on key points
+- Prioritize discussion highlights, decisions made, and next actions
+- If the session contains mixed Japanese/English, prefer English in the logbook
+- Clearly separate facts from opinions (speculation/evaluation)`;
+var SECRET_PATTERNS = [
+  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
+  /\bsk-[A-Za-z0-9_-]{8,}\b/g,
+  /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi,
+  /\bAKIA[0-9A-Z]{16}\b/g,
+  /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g,
+  /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g,
+  /(?:password|passwd|pwd|secret|client[_-]?secret|api[_-]?key|apikey|access[_-]?token|refresh[_-]?token)\s*[:=]\s*\S+/gi
+];
+function maskSecrets(value) {
+  let masked = value;
+  for (const pattern of SECRET_PATTERNS) {
+    masked = masked.replace(pattern, "***");
+  }
+  return masked;
+}
 function isPluginDisabled() {
   return process.env.OPENCODE_DAILY_LOGBOOK_DISABLED === "true";
+}
+function isRedactEnabled() {
+  return process.env.OPENCODE_DAILY_LOGBOOK_REDACT !== "false";
+}
+function isTranscriptIncluded() {
+  return process.env.OPENCODE_DAILY_LOGBOOK_INCLUDE_TRANSCRIPT !== "false";
+}
+function isDailyLimitEnabled() {
+  return process.env.OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT === "true";
+}
+function getThrottleWindowMs() {
+  const rawValue = process.env.OPENCODE_DAILY_LOGBOOK_THROTTLE_MS;
+  if (rawValue === undefined || rawValue === "") {
+    return DUPLICATE_WINDOW_MS;
+  }
+  const parsedMs = Number.parseInt(rawValue, 10);
+  if (Number.isNaN(parsedMs) || parsedMs < 0) {
+    return DUPLICATE_WINDOW_MS;
+  }
+  return parsedMs;
 }
 function formatDateTokens(now) {
   const year = now.getFullYear();
@@ -67,7 +104,7 @@ function truncateText(value, maxChars) {
     return value;
   }
   return `${value.slice(0, maxChars)}
-...\uFF08\u9577\u3044\u305F\u3081\u7701\u7565\uFF09`;
+...(truncated)`;
 }
 function extractReadableText(part) {
   if (part.type === "text" && typeof part.text === "string") {
@@ -90,17 +127,21 @@ ${text}`;
 
 `);
   if (!transcriptLines) {
-    return "\uFF08\u5143\u30BB\u30C3\u30B7\u30E7\u30F3\u306B\u8981\u7D04\u53EF\u80FD\u306A\u30C6\u30AD\u30B9\u30C8\u5C65\u6B74\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093\u3067\u3057\u305F\uFF09";
+    return "(No summarizable text history found in the source session)";
   }
-  return truncateText(transcriptLines, TRANSCRIPT_MAX_CHARS);
+  const maskedTranscript = isRedactEnabled() ? maskSecrets(transcriptLines) : transcriptLines;
+  return truncateText(maskedTranscript, TRANSCRIPT_MAX_CHARS);
 }
-function buildPrompt(template, sessionId, transcript) {
+function buildPrompt(template, sessionId, transcript, includeTranscript) {
   const now = new Date;
   const replacedTemplate = replaceTemplateVariables(template, sessionId, now);
+  if (!includeTranscript || !transcript) {
+    return replacedTemplate;
+  }
   return `${replacedTemplate}
 
 ---
-\u4EE5\u4E0B\u306F\u30BB\u30C3\u30B7\u30E7\u30F3 ${sessionId} \u306E\u5C65\u6B74\u629C\u7C8B\u3067\u3059\u3002\u5C65\u6B74\u306B\u57FA\u3065\u3044\u3066\u65E5\u5831\u3092\u4F5C\u6210\u3057\u3066\u304F\u3060\u3055\u3044\u3002
+Below is an excerpt of the session ${sessionId} history. Create the daily logbook based on this history.
 
 ${transcript}`;
 }
@@ -116,19 +157,25 @@ async function logError(client, message, error) {
     });
   } catch {}
 }
-function isDuplicateTrigger(sessionId, nowMs) {
-  const lastTriggeredAt = recentlyTriggeredAtBySessionId.get(sessionId);
-  if (!lastTriggeredAt) {
+function isWithinWindow(lastTriggeredAt, nowMs, windowMs) {
+  if (lastTriggeredAt === undefined) {
     return false;
   }
-  return nowMs - lastTriggeredAt < DUPLICATE_WINDOW_MS;
+  return nowMs - lastTriggeredAt < windowMs;
 }
-function pruneExpiredGuards(nowMs) {
+function isDuplicateTrigger(sessionId, nowMs, windowMs) {
+  return isWithinWindow(recentlyTriggeredAtBySessionId.get(sessionId), nowMs, windowMs);
+}
+function pruneExpiredGuards(nowMs, windowMs) {
   for (const [sessionId, timestamp] of recentlyTriggeredAtBySessionId.entries()) {
-    if (nowMs - timestamp >= DUPLICATE_WINDOW_MS * 2) {
+    if (nowMs - timestamp >= windowMs * 2) {
       recentlyTriggeredAtBySessionId.delete(sessionId);
     }
   }
+}
+function isDailyLogbookExists(directory, outputDir, date) {
+  const dailyLogbookPath = resolve(directory, outputDir, `${date}_logbook.md`);
+  return existsSync(dailyLogbookPath);
 }
 var DailyLogbookPlugin = async ({ client, directory }) => {
   await client.app.log({
@@ -148,8 +195,9 @@ var DailyLogbookPlugin = async ({ client, directory }) => {
       }
       const originalSessionId = event.properties.sessionID;
       const nowMs = Date.now();
-      pruneExpiredGuards(nowMs);
-      if (inFlightSessionIds.has(originalSessionId) || isDuplicateTrigger(originalSessionId, nowMs)) {
+      const throttleWindowMs = getThrottleWindowMs();
+      pruneExpiredGuards(nowMs, throttleWindowMs);
+      if (inFlightSessionIds.has(originalSessionId) || isDuplicateTrigger(originalSessionId, nowMs, throttleWindowMs)) {
         return;
       }
       inFlightSessionIds.add(originalSessionId);
@@ -164,6 +212,16 @@ var DailyLogbookPlugin = async ({ client, directory }) => {
         const currentSessionTitle = currentSessionResult.data.title ?? "";
         if (currentSessionTitle.startsWith(GENERATED_TITLE_PREFIX)) {
           return;
+        }
+        const date = formatDateTokens(new Date).date;
+        if (isDailyLimitEnabled()) {
+          const customTemplatePath = process.env.OPENCODE_DAILY_LOGBOOK_TEMPLATE;
+          if (customTemplatePath) {
+            await logWarn(client, "OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT is not supported together with OPENCODE_DAILY_LOGBOOK_TEMPLATE (file name pattern is unknown). Daily limit check is skipped.");
+          } else if (isDailyLogbookExists(directory, getOutputDir(), date)) {
+            await logWarn(client, `Daily logbook for ${date} already exists. Skipping generation (OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT=true).`);
+            return;
+          }
         }
         let template = SAMPLE_TEMPLATE;
         try {
@@ -180,8 +238,9 @@ var DailyLogbookPlugin = async ({ client, directory }) => {
           await logError(client, "Failed to load source session messages", messagesResult.error);
           return;
         }
-        const transcript = buildTranscript(messagesResult.data);
-        const prompt = buildPrompt(template, originalSessionId, transcript);
+        const includeTranscript = isTranscriptIncluded();
+        const transcript = includeTranscript ? buildTranscript(messagesResult.data) : "";
+        const prompt = buildPrompt(template, originalSessionId, transcript, includeTranscript);
         const generatedSessionResult = await client.session.create({
           body: {
             title: `${GENERATED_TITLE_PREFIX} ${formatDateTokens(new Date).date}`
@@ -218,6 +277,11 @@ var DailyLogbookPlugin = async ({ client, directory }) => {
 };
 var daily_logbook_default = DailyLogbookPlugin;
 export {
+  maskSecrets,
+  isWithinWindow,
+  isDailyLogbookExists,
+  getThrottleWindowMs,
   daily_logbook_default as default,
+  buildTranscript,
   DailyLogbookPlugin
 };

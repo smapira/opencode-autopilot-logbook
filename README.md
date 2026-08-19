@@ -8,8 +8,8 @@ An OpenCode plugin that automatically generates daily reports when a session bec
 
 - Auto-generates daily reports on `session.idle` events
 - Configurable output directory
-- Manual trigger via `/daily-logbook` command
 - Custom templates supported via environment variable
+- If the session includes mixed Japanese/English, prefer English in the generated logbook
 
 ## Install
 
@@ -68,6 +68,51 @@ export OPENCODE_DAILY_LOGBOOK_TEMPLATE="plans/dev/daily-logbook.md"
 
 ```bash
 export OPENCODE_DAILY_LOGBOOK_OUTPUT_DIR="daily"
+```
+
+### `OPENCODE_DAILY_LOGBOOK_REDACT`
+
+- Default: `true`
+- When enabled, known secret patterns (`sk-...`, `Bearer <token>`, `AKIA...`, `ghp_...`, `xoxb-...`, PEM private keys, `password:`-style pairs, etc.) in the transcript are replaced with `***` before being embedded into the prompt
+- Only the exact value `"false"` disables masking. Any other value keeps the default (`true`)
+- Masking is a fail-safe to reduce accidental disclosure. It is **not** a guarantee of complete secrecy. Never rely on it to protect sensitive information
+
+```bash
+export OPENCODE_DAILY_LOGBOOK_REDACT=false
+```
+
+### `OPENCODE_DAILY_LOGBOOK_INCLUDE_TRANSCRIPT`
+
+- Default: `true`
+- When `"false"`, the transcript is not embedded into the prompt at all (the template alone is used)
+- Only the exact value `"false"` disables embedding. Any other value keeps the default (`true`)
+- When this is `"false"`, the transcript is never embedded regardless of the `OPENCODE_DAILY_LOGBOOK_REDACT` setting
+
+```bash
+export OPENCODE_DAILY_LOGBOOK_INCLUDE_TRANSCRIPT=false
+```
+
+### `OPENCODE_DAILY_LOGBOOK_THROTTLE_MS`
+
+- Default: `90000` (90 seconds)
+- Minimum interval between two automatic generations for the same session
+- Parsed as an integer. If the value cannot be parsed as a non-negative integer, the default is used
+
+```bash
+export OPENCODE_DAILY_LOGBOOK_THROTTLE_MS=180000
+```
+
+### `OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT`
+
+- Default: `false`
+- Only the exact value `"true"` enables the limit. Any other value keeps the default (`false`)
+- When enabled, generation is skipped if `{{ outputDir }}/{{ date }}_logbook.md` already exists for today (file-based check, survives process restarts)
+- **When enabled, the append-style workflow becomes once per day** (Issue C)
+- **If the file exists but is empty or incomplete (e.g. a previous generation failed), regeneration is blocked for the rest of the day** (Issue D). The check is purely file-existence based
+- **Not supported together with `OPENCODE_DAILY_LOGBOOK_TEMPLATE`**: a custom template may change the file name pattern, so the existence check cannot be performed. A warning is logged and the daily limit check is skipped in that case
+
+```bash
+export OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT=true
 ```
 
 ## Output

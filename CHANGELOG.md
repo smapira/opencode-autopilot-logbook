@@ -25,6 +25,8 @@
 
 - Removed the "manual trigger via `/daily-logbook` command" claim from READMEs; the command files are now documented as repository-local features, not plugin features
 - Dropped the stale build artifact `dist/daily-logbook.js`; `dist/` now contains only `index.js`
+- Relocated the sample custom template to `documents/plans/dev/daily-logbook.md` (committed) and updated the `OPENCODE_DAILY_LOGBOOK_TEMPLATE` README example to point to it; removed the leftover root `plans/` directory to complete the `plans/` → `documents/plans/` reorganization
+- Standardized the `OPENCODE_DAILY_LOGBOOK_OUTPUT_DIR` default notation to `artifacts/daily` (no trailing slash) in READMEs to match the implementation
 
 ## 1.0.6 – 1.0.9 (2026-08-14 – 2026-08-18)
 

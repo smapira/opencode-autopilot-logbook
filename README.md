@@ -58,12 +58,12 @@ export OPENCODE_DAILY_LOGBOOK_DISABLED=true
 - Falls back to `SAMPLE_TEMPLATE` if the specified file cannot be read
 
 ```bash
-export OPENCODE_DAILY_LOGBOOK_TEMPLATE="plans/dev/daily-logbook.md"
+export OPENCODE_DAILY_LOGBOOK_TEMPLATE="documents/plans/dev/daily-logbook.md"
 ```
 
 ### `OPENCODE_DAILY_LOGBOOK_OUTPUT_DIR`
 
-- Default: `artifacts/daily/`
+- Default: `artifacts/daily`
 - Set to change the output directory for daily reports
 
 ```bash

@@ -60,12 +60,12 @@ export OPENCODE_DAILY_LOGBOOK_DISABLED=true
 - 指定ファイルの読み込みに失敗した場合は自動で `SAMPLE_TEMPLATE` にフォールバック
 
 ```bash
-export OPENCODE_DAILY_LOGBOOK_TEMPLATE="plans/dev/daily-logbook.md"
+export OPENCODE_DAILY_LOGBOOK_TEMPLATE="documents/plans/dev/daily-logbook.md"
 ```
 
 ### `OPENCODE_DAILY_LOGBOOK_OUTPUT_DIR`
 
-- 既定値: `artifacts/daily/`
+- 既定値: `artifacts/daily`
 - 設定時は日報の出力先ディレクトリを変更可能
 
 ```bash

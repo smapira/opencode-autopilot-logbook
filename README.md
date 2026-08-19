@@ -73,7 +73,7 @@ export OPENCODE_DAILY_LOGBOOK_OUTPUT_DIR="daily"
 ### `OPENCODE_DAILY_LOGBOOK_REDACT`
 
 - Default: `true`
-- When enabled, known secret patterns (`sk-...`, `Bearer <token>`, `AKIA...`, `ghp_...`, `xoxb-...`, PEM private keys, `password:`-style pairs, etc.) in the transcript are replaced with `***` before being embedded into the prompt
+- When enabled, known secret patterns (`sk-...`, `Bearer <token>`, `AKIA...`, `ghp_...`, `github_pat_...`, `xoxb-...`, JWT (`eyJ...`), PEM private keys, `password:`-style pairs, etc.) in the transcript are replaced with `***` before being embedded into the prompt
 - Only the exact value `"false"` disables masking. Any other value keeps the default (`true`)
 - Masking is a fail-safe to reduce accidental disclosure. It is **not** a guarantee of complete secrecy. Never rely on it to protect sensitive information
 

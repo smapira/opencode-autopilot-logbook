@@ -4,7 +4,7 @@
 
 ### Added
 
-- Secret masking: known secret patterns in the transcript (`sk-...`, `Bearer <token>`, `AKIA...`, `ghp_...`, `xoxb-...`, PEM private keys, `password:`-style pairs, etc.) are replaced with `***` before being embedded into the prompt
+- Secret masking: known secret patterns in the transcript (`sk-...`, `Bearer <token>`, `AKIA...`, `ghp_...`, `github_pat_...`, `xoxb-...`, JWT (`eyJ...`), PEM private keys, `password:`-style pairs, etc.) are replaced with `***` before being embedded into the prompt
   - Applied **before** truncation so a secret split at the cut point is not leaked
   - Controlled by `OPENCODE_DAILY_LOGBOOK_REDACT` (default `true`, only `"false"` disables)
   - `OPENCODE_DAILY_LOGBOOK_INCLUDE_TRANSCRIPT` (default `true`, only `"false"` disables) can omit the transcript entirely; when `false`, the transcript is never embedded regardless of `REDACT`

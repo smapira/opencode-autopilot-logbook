@@ -37,8 +37,18 @@ describe("maskSecrets", () => {
     expect(maskSecrets("token ghp_1234567890abcdefghijklmnopqrstuvwx")).toBe("token ***");
   });
 
+  test("masks GitHub fine-grained PATs", () => {
+    expect(maskSecrets("token github_pat_11ABCdefghijklmnopqrstuvwx")).toBe("token ***");
+  });
+
   test("masks Slack tokens", () => {
     expect(maskSecrets("slack xoxb-1234567890-abcdefghij")).toBe("slack ***");
+  });
+
+  test("masks JWTs", () => {
+    const jwt =
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+    expect(maskSecrets(`token ${jwt}`)).toBe("token ***");
   });
 
   test("masks password-style key/value pairs", () => {
@@ -89,15 +99,18 @@ describe("buildTranscript", () => {
   });
 
   test("masks secrets before truncation so a secret split at the cut point is not leaked", () => {
-    // truncate 境界の直前からシークレットが始まる長文を作る。
-    // truncate 後にマスクする実装だと `sk-a` の断片が残ってしまうため、
-    // 「truncate 前適用」を検証できる。
-    const filler = "a".repeat(12_000);
+    // transcript は `[User]\n`(7) + filler + スペース(1) + シークレット(15) で構成される。
+    // filler = 11_990 のときシークレット先頭は 11_998 文字目(0始まり)から始まり、
+    // 12_000 文字の切り口で先頭 2 文字 "sk" が分割されて残る。
+    // truncate 後にマスクする実装だとこの断片がマスクされずに残るため、
+    // `not.toContain("sk")` の失敗で「truncate 前適用」を検証できる。
+    // （filler は "a" のみなので "sk" はシークレット由来と確定できる）
+    const filler = "a".repeat(11_990);
     const messages = [messageOf("user", `${filler} sk-abcdefgh1234`)];
     const transcript = buildTranscript(messages);
 
     expect(transcript.endsWith("...(truncated)")).toBe(true);
-    expect(transcript).not.toContain("sk-");
+    expect(transcript).not.toContain("sk");
   });
 
   test("does not mask when OPENCODE_DAILY_LOGBOOK_REDACT=false", () => {

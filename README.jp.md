@@ -75,7 +75,7 @@ export OPENCODE_DAILY_LOGBOOK_OUTPUT_DIR="daily"
 ### `OPENCODE_DAILY_LOGBOOK_REDACT`
 
 - 既定値: `true`（有効）
-- 有効時、transcript に含まれる既知のシークレットパターン（`sk-...`、`Bearer <token>`、`AKIA...`、`ghp_...`、`xoxb-...`、PEM 秘密鍵、`password:` 形式のペア等）を `***` に置換してから prompt に埋め込みます
+- 有効時、transcript に含まれる既知のシークレットパターン（`sk-...`、`Bearer <token>`、`AKIA...`、`ghp_...`、`github_pat_...`、`xoxb-...`、JWT（`eyJ...`）、PEM 秘密鍵、`password:` 形式のペア等）を `***` に置換してから prompt に埋め込みます
 - 無効化できるのは `"false"` の厳密一致のみ。それ以外の値は既定値（`true`）のままです
 - マスキングは「転送事故を減らす」ためのフェイルセーフであり、完全な秘密保護を保証するものではありません。機密情報の保護をこの機能に依存しないでください
 

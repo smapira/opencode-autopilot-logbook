@@ -75,9 +75,15 @@ export OPENCODE_DAILY_LOGBOOK_OUTPUT_DIR="daily"
 ### `OPENCODE_DAILY_LOGBOOK_REDACT`
 
 - 既定値: `true`（有効）
-- 有効時、transcript に含まれる既知のシークレットパターン（`sk-...`、`Bearer <token>`、`AKIA...`、`ghp_...`、`github_pat_...`、`xoxb-...`、JWT（`eyJ...`）、PEM 秘密鍵、`password:` 形式のペア等）を `***` に置換してから prompt に埋め込みます
+- 有効時、transcript に含まれる既知のシークレットパターン（`sk-...`/`SK-...`、`Bearer <token>`、`AKIA...`、`ghp_...`、`github_pat_...`、`xoxb-...`、JWT（`eyJ...`）、PEM 秘密鍵、`password:` 形式のペア等）を `***` に置換してから prompt に埋め込みます
 - 無効化できるのは `"false"` の厳密一致のみ。それ以外の値は既定値（`true`）のままです
 - マスキングは「転送事故を減らす」ためのフェイルセーフであり、完全な秘密保護を保証するものではありません。機密情報の保護をこの機能に依存しないでください
+
+マスキングの制限:
+
+- OpenAI 形式キーは大文字小文字を問わず対応（`sk-...` および `SK-...`）
+- **各セグメントが 10 文字未満の短い JWT は非対応**（マッチャーはセグメントごとに 10 文字以上を要求します）
+- `Bearer` は文脈を判断しないため、自然文（例: "bearer of"）も過マスクされ得ます
 
 ```bash
 export OPENCODE_DAILY_LOGBOOK_REDACT=false
@@ -99,6 +105,8 @@ export OPENCODE_DAILY_LOGBOOK_INCLUDE_TRANSCRIPT=false
 - 既定値: `90000`（90秒）
 - 同一セッションで自動生成が連続して行われる間隔の最小値
 - 整数として解釈されます。非負の整数として解釈できない場合は既定値が使われます
+- `0` を指定するとスロットルが無効になります（他の制限がなければ、idle のたびに生成されます）
+- 科学記法（例: `1e3`）は整数パーサーで打ち切られるため `1000` ではなく `1` として解釈されます
 
 ```bash
 export OPENCODE_DAILY_LOGBOOK_THROTTLE_MS=180000
@@ -111,6 +119,8 @@ export OPENCODE_DAILY_LOGBOOK_THROTTLE_MS=180000
 - 有効時、当日の `{{ outputDir }}/{{ date }}_logbook.md` が既に存在すれば生成をスキップします（ファイルベース判定のため、プロセス再起動を跨いで機能します）
 - **有効時は追記・更新運用が 1 日 1 回になります**（Issue C）
 - **ファイルが存在しても空・不完全（前回の生成失敗等）の場合、当日中の再生成がブロックされます**。判定はファイルの存在のみに基づくためです（Issue D）
+- **同一日付の並行 idle は抑制されます**: 当日の生成が実行中のあいだ、同時に idle した他のセッションはスキップされます（メモリ上の日付キーガードのため、プロセス再起動は跨ぎません）
+- **有効時、`{{ outputDir }}` はプラグインのディレクトリ基準の絶対パスとして prompt に渡されます**。エージェントが存在チェックと同じ場所にファイルを書けるようにするためです。無効時は従来どおり相対文字列（例: `artifacts/daily`）が渡されます
 - **`OPENCODE_DAILY_LOGBOOK_TEMPLATE` との併用は非対応です**: カスタムテンプレートによりファイル名パターンが変わるため存在判定ができません。併用時は warning ログを出し、daily-limit チェックをスキップします
 
 ```bash

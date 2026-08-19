@@ -4,15 +4,22 @@
 
 ### Added
 
-- Secret masking: known secret patterns in the transcript (`sk-...`, `Bearer <token>`, `AKIA...`, `ghp_...`, `github_pat_...`, `xoxb-...`, JWT (`eyJ...`), PEM private keys, `password:`-style pairs, etc.) are replaced with `***` before being embedded into the prompt
+- Secret masking: known secret patterns in the transcript (`sk-...`/`SK-...`, `Bearer <token>`, `AKIA...`, `ghp_...`, `github_pat_...`, `xoxb-...`, JWT (`eyJ...`), PEM private keys, `password:`-style pairs, etc.) are replaced with `***` before being embedded into the prompt
   - Applied **before** truncation so a secret split at the cut point is not leaked
   - Controlled by `OPENCODE_DAILY_LOGBOOK_REDACT` (default `true`, only `"false"` disables)
   - `OPENCODE_DAILY_LOGBOOK_INCLUDE_TRANSCRIPT` (default `true`, only `"false"` disables) can omit the transcript entirely; when `false`, the transcript is never embedded regardless of `REDACT`
   - Masking is a fail-safe to reduce accidental disclosure, not a guarantee of complete secrecy
+  - Uppercase `SK-` keys are also masked (case-insensitive `sk-`/`SK-`); short JWTs (any segment < 10 chars) and context-free `Bearer` over-masking are documented limitations
 - Configurable throttle window: `OPENCODE_DAILY_LOGBOOK_THROTTLE_MS` (integer parse, falls back to 90000 on NaN/negative)
 - Daily limit: `OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT=true` skips generation when `{{ outputDir }}/{{ date }}_logbook.md` already exists (file-based check, survives process restarts)
   - Not supported together with `OPENCODE_DAILY_LOGBOOK_TEMPLATE` (warns and skips the check)
-- Unit tests via `bun test` (`test/daily-logbook.test.ts`) covering masking, throttle window, and daily-limit existence check
+  - **Concurrent idle events for the same date are suppressed** via an in-memory date-keyed in-flight guard (different sessions idling at the same time no longer both pass the existence check)
+  - **`{{ outputDir }}` is passed as an absolute path** (resolved against the plugin directory) when the limit is enabled, so the agent writes to the same location the existence check inspects; the relative string is kept when disabled
+- Unit tests via `bun test` (`test/daily-logbook.test.ts`) covering masking, throttle window, daily-limit existence check, daily-limit concurrency guard, and absolute-path prompt resolution
+
+### Changed
+
+- `{{ dateJp }}` template variable value changed from ISO (`YYYY-MM-DD`, introduced in 1.0.9) back to Japanese (`YYYY年M月D日`) at the source level. No public behavior impact documented in this release; recorded for completeness
 
 ### Fixed
 

@@ -73,9 +73,15 @@ export OPENCODE_DAILY_LOGBOOK_OUTPUT_DIR="daily"
 ### `OPENCODE_DAILY_LOGBOOK_REDACT`
 
 - Default: `true`
-- When enabled, known secret patterns (`sk-...`, `Bearer <token>`, `AKIA...`, `ghp_...`, `github_pat_...`, `xoxb-...`, JWT (`eyJ...`), PEM private keys, `password:`-style pairs, etc.) in the transcript are replaced with `***` before being embedded into the prompt
+- When enabled, known secret patterns (`sk-...`/`SK-...`, `Bearer <token>`, `AKIA...`, `ghp_...`, `github_pat_...`, `xoxb-...`, JWT (`eyJ...`), PEM private keys, `password:`-style pairs, etc.) in the transcript are replaced with `***` before being embedded into the prompt
 - Only the exact value `"false"` disables masking. Any other value keeps the default (`true`)
 - Masking is a fail-safe to reduce accidental disclosure. It is **not** a guarantee of complete secrecy. Never rely on it to protect sensitive information
+
+Masking limitations:
+
+- OpenAI-style keys are matched case-insensitively (`sk-...` and `SK-...`)
+- JWTs with any segment shorter than 10 characters are **not** masked (the matcher requires at least 10 characters per segment)
+- `Bearer` matching is context-free, so natural-language phrases such as "bearer of" may be over-masked
 
 ```bash
 export OPENCODE_DAILY_LOGBOOK_REDACT=false
@@ -97,6 +103,8 @@ export OPENCODE_DAILY_LOGBOOK_INCLUDE_TRANSCRIPT=false
 - Default: `90000` (90 seconds)
 - Minimum interval between two automatic generations for the same session
 - Parsed as an integer. If the value cannot be parsed as a non-negative integer, the default is used
+- `0` disables throttling (every idle event triggers generation, subject to other limits)
+- Values in scientific notation (e.g. `1e3`) are truncated by the integer parser and read as `1`, not `1000`
 
 ```bash
 export OPENCODE_DAILY_LOGBOOK_THROTTLE_MS=180000
@@ -109,6 +117,8 @@ export OPENCODE_DAILY_LOGBOOK_THROTTLE_MS=180000
 - When enabled, generation is skipped if `{{ outputDir }}/{{ date }}_logbook.md` already exists for today (file-based check, survives process restarts)
 - **When enabled, the append-style workflow becomes once per day** (Issue C)
 - **If the file exists but is empty or incomplete (e.g. a previous generation failed), regeneration is blocked for the rest of the day** (Issue D). The check is purely file-existence based
+- **Concurrent idle events for the same date are suppressed**: while a generation for today is in flight, other sessions that idle at the same time are skipped (an in-memory, date-keyed guard; does not survive process restarts)
+- **When enabled, `{{ outputDir }}` is passed to the prompt as an absolute path** resolved against the plugin's directory, so the agent writes to the same location the existence check inspects. When disabled, the relative string (e.g. `artifacts/daily`) is passed as before
 - **Not supported together with `OPENCODE_DAILY_LOGBOOK_TEMPLATE`**: a custom template may change the file name pattern, so the existence check cannot be performed. A warning is logged and the daily limit check is skipped in that case
 
 ```bash

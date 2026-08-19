@@ -44,7 +44,10 @@ const SECRET_PATTERNS: RegExp[] = [
   /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, // GitHub tokens (ghp_/gho_/ghu_/ghs_/ghr_)
   /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, // GitHub fine-grained PATs (github_pat_...)
   /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, // Slack tokens (xoxb-, xoxa-, xoxp-, ...)
-  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, // JWTs (eyJ...)
+  // JWT は eyJ で始まる 3 セグメント構造。各セグメントに上限を付与し、
+  // 長大な連続文字列での polynomial バックトラッキングを予防する。
+  // 実用上の base64url セグメントは 120 文字を大きく下回る（上限は安全マージン）。
+  /\beyJ[A-Za-z0-9_-]{10,120}\.[A-Za-z0-9_-]{10,120}\.[A-Za-z0-9_-]{10,120}\b/g, // JWTs (eyJ...)
   /(?:password|passwd|pwd|secret|client[_-]?secret|api[_-]?key|apikey|access[_-]?token|refresh[_-]?token)\s*[:=]\s*\S+/gi,
 ];
 

@@ -2,6 +2,8 @@
 
 ![OpenCode Autopilot Logbook](assets/thumbnail.png)
 
+[![npm version](https://img.shields.io/npm/v/opencode-autopilot-logbook)](https://www.npmjs.com/package/opencode-autopilot-logbook) [![npm downloads](https://img.shields.io/npm/dm/opencode-autopilot-logbook)](https://www.npmjs.com/package/opencode-autopilot-logbook) [![GitHub stars](https://img.shields.io/github/stars/smapira/opencode-autopilot-logbook)](https://github.com/smapira/opencode-autopilot-logbook) [![license](https://img.shields.io/npm/l/opencode-autopilot-logbook)](LICENSE)
+
 An OpenCode plugin that automatically generates daily reports when a session becomes idle.
 
 [README in Japanese](./README.jp.md)

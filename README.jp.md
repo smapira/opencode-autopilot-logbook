@@ -1,5 +1,7 @@
 # OpenCode Autopilot Logbook
 
+![OpenCode Autopilot Logbook](assets/thumbnail.png)
+
 OpenCode セッション終了時に、日報を自動生成するプラグインです。
 
 [English](./README.md)

@@ -1,5 +1,7 @@
 # OpenCode Autopilot Logbook
 
+![OpenCode Autopilot Logbook](assets/thumbnail.png)
+
 An OpenCode plugin that automatically generates daily reports when a session becomes idle.
 
 [README in Japanese](./README.jp.md)

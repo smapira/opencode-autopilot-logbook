@@ -44,6 +44,26 @@ rm -rf ~/.cache/opencode/packages/opencode-autopilot-logbook*
 
 ## 環境変数
 
+以下の設定はすべて環境変数で切り替えます。OpenCode を起動する前に設定し、設定後は OpenCode を再起動してください。起動時に読み込まれます。
+
+**一時的に変える場合**
+
+```bash
+export OPENCODE_DAILY_LOGBOOK_OUTPUT_DIR="daily"
+opencode
+```
+
+**ずっと変えておく場合**
+
+シェルの設定ファイル（zsh なら `~/.zshrc`、bash なら `~/.bashrc`）に `export` 行を追記し、再読み込みします。
+
+```bash
+echo 'export OPENCODE_DAILY_LOGBOOK_OUTPUT_DIR="daily"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+`echo $OPENCODE_DAILY_LOGBOOK_OUTPUT_DIR` で値が入っているか確認し、`{{ outputDir }}/YYYYMMDD_logbook.md` が期待どおりの場所に作られるか見てください。
+
 ### `OPENCODE_DAILY_LOGBOOK_DISABLED`
 
 - 既定値: `false`（未設定時）
@@ -67,10 +87,22 @@ export OPENCODE_DAILY_LOGBOOK_TEMPLATE="documents/plans/dev/daily-logbook.md"
 
 - 既定値: `artifacts/daily`
 - 設定時は日報の出力先ディレクトリを変更可能
+- 相対パスはプラグインのディレクトリを基準に `resolve(directory, outputDir)` で解決されます。絶対パスはそのまま使われます。`OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT=true` のときは、存在チェックとエージェントの書き込み先を合わせるため、絶対パスとして prompt に渡されます
+
+例
 
 ```bash
+# リポジトリ直下の daily に
 export OPENCODE_DAILY_LOGBOOK_OUTPUT_DIR="daily"
+
+# documents 配下に
+export OPENCODE_DAILY_LOGBOOK_OUTPUT_DIR="documents/daily"
+
+# 一時的に絶対パスで試す
+export OPENCODE_DAILY_LOGBOOK_OUTPUT_DIR="/tmp/my-logs"
 ```
+
+`ls -la daily/` など、指定した場所に `YYYYMMDD_logbook.md` が作られるか確認してください
 
 ### `OPENCODE_DAILY_LOGBOOK_REDACT`
 
@@ -134,6 +166,12 @@ export OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT=true
 - 日報: `{{ outputDir }}/YYYYMMDD_logbook.md`
 
 既存ファイルがある場合は、上書きではなく追記・更新する運用です。
+
+## フィロソフィー
+
+私たちが大切にしている OSS への向き合い方を、指針としてまとめたコラムです。この指針があるからこそ、日々の OSS 活動や記事の執筆を続けています。社会に積み重なった見直されない仕組みを「技術的負債」と捉え直す考え方に触れていただけるとうれしいです。
+
+- [【エンジニアブログ】社会にも、技術的負債がある。](https://www.thch-vape.shop/guide/column/git-log--oneline--all--society)
 
 ## ライセンス
 

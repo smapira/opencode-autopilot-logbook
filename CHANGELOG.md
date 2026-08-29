@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.1.1 (2026-08-30)
+
+### Added
+
+- Philosophy section in READMEs linking to the guiding column on OSS principles (`https://www.thch-vape.shop/guide/column/git-log--oneline--all--society`). English README uses `## Philosophy`, Japanese README uses `## フィロソフィー` with the same intent. The column frames long-unreviewed social structures as technical debt and explains why we continue OSS activities and writing
+
+### Changed
+
+- Documented how to configure environment variables in both READMEs (`## Environment Variables` / `## 環境変数`). Added a common intro explaining that variables are read at startup and require an OpenCode restart, with examples for one-session (`export ...` then `opencode`) and persistent (`~/.zshrc` / `~/.bashrc`) usage and verification via `echo` and `ls`
+- Expanded `OPENCODE_DAILY_LOGBOOK_OUTPUT_DIR` documentation in both READMEs with path-resolution details (`resolve(directory, outputDir)` for relative paths, absolute paths as is, and absolute-path promotion when `OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT=true`) and three concrete examples (`daily`, `documents/daily`, `/tmp/my-logs`)
+
 ## 1.1.0 (2026-08-19)
 
 ### Added

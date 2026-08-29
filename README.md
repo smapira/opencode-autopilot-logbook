@@ -42,6 +42,26 @@ rm -rf ~/.cache/opencode/packages/opencode-autopilot-logbook*
 
 ## Environment Variables
 
+All settings below are configured via environment variables. Set them **before launching OpenCode** and then restart OpenCode. Variables are read at startup.
+
+**For one session only**
+
+```bash
+export OPENCODE_DAILY_LOGBOOK_OUTPUT_DIR="daily"
+opencode
+```
+
+**To persist across sessions**
+
+Add the `export` line to your shell profile (`~/.zshrc` for zsh, `~/.bashrc` for bash), then reload it.
+
+```bash
+echo 'export OPENCODE_DAILY_LOGBOOK_OUTPUT_DIR="daily"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+Verify the value is set with `echo $OPENCODE_DAILY_LOGBOOK_OUTPUT_DIR` and check that `{{ outputDir }}/YYYYMMDD_logbook.md` is created in the expected location.
+
 ### `OPENCODE_DAILY_LOGBOOK_DISABLED`
 
 - Default: `false`
@@ -65,10 +85,22 @@ export OPENCODE_DAILY_LOGBOOK_TEMPLATE="documents/plans/dev/daily-logbook.md"
 
 - Default: `artifacts/daily`
 - Set to change the output directory for daily reports
+- Relative paths are resolved against the plugin directory (`resolve(directory, outputDir)`). Absolute paths are used as is. When `OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT=true`, the value is passed to the prompt as an absolute path so the existence check and the agent write to the same location
+
+Examples
 
 ```bash
+# Simple folder in the repository
 export OPENCODE_DAILY_LOGBOOK_OUTPUT_DIR="daily"
+
+# Under documents
+export OPENCODE_DAILY_LOGBOOK_OUTPUT_DIR="documents/daily"
+
+# Absolute path for temporary testing
+export OPENCODE_DAILY_LOGBOOK_OUTPUT_DIR="/tmp/my-logs"
 ```
+
+Verify with `ls -la daily/` or the directory you chose to confirm `YYYYMMDD_logbook.md` is created there
 
 ### `OPENCODE_DAILY_LOGBOOK_REDACT`
 
@@ -130,6 +162,12 @@ export OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT=true
 - Daily report: `{{ outputDir }}/YYYYMMDD_logbook.md`
 
 Existing files are updated (appended), not overwritten.
+
+## Philosophy
+
+This column outlines the principles that guide how we engage with OSS. These principles are the reason we continue our day-to-day OSS activities and writing. It reframes long-unreviewed social structures as a form of technical debt. We would be glad if you take a look.
+
+- [Engineering Blog: Society Also Has Technical Debt](https://www.thch-vape.shop/guide/column/git-log--oneline--all--society)
 
 ## License
 

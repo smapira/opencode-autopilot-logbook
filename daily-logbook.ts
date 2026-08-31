@@ -9,9 +9,9 @@ const TRANSCRIPT_MAX_MESSAGES = 80;
 const TRANSCRIPT_MAX_CHARS = 12_000;
 
 const inFlightSessionIds = new Set<string>();
-// daily-limit 有効時のみ使う日付キーの in-flight ガード。
-// inFlightSessionIds はセッション単位のため、別セッションが同時に idle すると
-// 両方が存在チェックを通過して二重生成され得る。日付キーでそれを防ぐ。
+// Date-keyed in-flight guard used only when daily-limit is enabled.
+// inFlightSessionIds is per-session, so two different sessions idling at the same time
+// could both pass the existence check and generate duplicates. Guarding by date prevents that.
 const dailyLimitInFlightByDate = new Set<string>();
 const recentlyTriggeredAtBySessionId = new Map<string, number>();
 
@@ -34,12 +34,12 @@ const SAMPLE_TEMPLATE = `Create a daily logbook based on the session {{ sessionI
 - Do not overwrite existing files; append or update instead
 - Keep the logbook concise and focused on key points
 - Prioritize discussion highlights, decisions made, and next actions
-- If the session contains mixed Japanese/English, prefer English in the logbook
+- Output language is template-driven (this default template uses English)
 - Clearly separate facts from opinions (speculation/evaluation)`;
 
-// 既知のシークレットパターン。置換は配列の順序で行う。
-// 秘密鍵ブロックは複数行にまたがるため、他のパターンより先に処理しないと
-// ブロックの一部だけがマスクされ、鍵の中身が残ってしまう。
+// Known secret patterns. Replacement follows array order.
+// The private-key block spans multiple lines, so it must be processed before other patterns
+// to avoid masking only part of the block and leaving the key body exposed.
 const SECRET_PATTERNS: RegExp[] = [
   /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
   /\b[sS][kK]-[A-Za-z0-9_-]{8,}\b/g, // OpenAI-style keys (sk-.../SK-.../sk-ant-...)
@@ -48,18 +48,18 @@ const SECRET_PATTERNS: RegExp[] = [
   /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, // GitHub tokens (ghp_/gho_/ghu_/ghs_/ghr_)
   /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, // GitHub fine-grained PATs (github_pat_...)
   /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, // Slack tokens (xoxb-, xoxa-, xoxp-, ...)
-  // JWT は eyJ で始まる 3 セグメント構造。各セグメントに上限を付与し、
-  // 長大な連続文字列での polynomial バックトラッキングを予防する。
-  // 実用上の base64url セグメントは 120 文字を大きく下回る（上限は安全マージン）。
+  // JWTs start with eyJ and have a 3-segment structure. Cap each segment to prevent
+  // polynomial backtracking on long continuous strings.
+  // Practical base64url segments are well below 120 characters (cap is a safety margin).
   /\beyJ[A-Za-z0-9_-]{10,120}\.[A-Za-z0-9_-]{10,120}\.[A-Za-z0-9_-]{10,120}\b/g, // JWTs (eyJ...)
   /(?:password|passwd|pwd|secret|client[_-]?secret|api[_-]?key|apikey|access[_-]?token|refresh[_-]?token)\s*[:=]\s*\S+/gi,
 ];
 
 /**
- * 既知のシークレットパターンを `***` に置換する。
+ * Replace known secret patterns with `***`.
  *
- * これは「転送事故を減らす」ためのフェイルセーフであり、完全な秘密保護を
- * 保証するものではない。機密情報を prompt に含めない運用が前提。
+ * This is a fail-safe to reduce accidental disclosure and does not guarantee
+ * complete secrecy. Avoid including sensitive information in prompts in the first place.
  */
 export function maskSecrets(value: string): string {
   let masked = value;
@@ -76,17 +76,17 @@ function isPluginDisabled(): boolean {
 }
 
 function isRedactEnabled(): boolean {
-  // 既定で有効（フェイルセーフ）。無効化は "false" の厳密一致のみ受け付ける。
+  // Enabled by default (fail-safe). Only the exact string "false" disables it.
   return process.env.OPENCODE_DAILY_LOGBOOK_REDACT !== "false";
 }
 
 function isTranscriptIncluded(): boolean {
-  // 既定で埋め込み。無効化は "false" の厳密一致のみ受け付ける。
+  // Included by default. Only the exact string "false" disables it.
   return process.env.OPENCODE_DAILY_LOGBOOK_INCLUDE_TRANSCRIPT !== "false";
 }
 
 function isDailyLimitEnabled(): boolean {
-  // 既定で無効。有効化は "true" の厳密一致のみ（既存 DISABLED と同じ規約）。
+  // Disabled by default. Only the exact string "true" enables it (same convention as DISABLED).
   return process.env.OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT === "true";
 }
 
@@ -97,7 +97,7 @@ export function getThrottleWindowMs(): number {
   }
 
   const parsedMs = Number.parseInt(rawValue, 10);
-  // 整数として解釈できない値・負値は意味のある設定ではないため既定（後方互換）にフォールバック。
+  // Fall back to the default (for backward compatibility) when the value cannot be parsed as an integer or is negative.
   if (Number.isNaN(parsedMs) || parsedMs < 0) {
     return DUPLICATE_WINDOW_MS;
   }
@@ -146,7 +146,7 @@ async function logWarn(client: Logger, message: string): Promise<void> {
       },
     });
   } catch {
-    // ログ出力失敗で本処理を壊さないため、ここでは no-op とする。
+    // Do not let logging failures break the main flow; no-op here.
   }
 }
 
@@ -192,19 +192,19 @@ export function buildTranscript(
     return "(No summarizable text history found in the source session)";
   }
 
-  // マスキングは truncate の前に行う。
-  // truncate 後に適用すると切り口でシークレットが分割され、マスク漏れするため。
+  // Masking must happen before truncation.
+  // If applied after truncation, a secret split at the cut point would be missed.
   const maskedTranscript = isRedactEnabled() ? maskSecrets(transcriptLines) : transcriptLines;
 
   return truncateText(maskedTranscript, TRANSCRIPT_MAX_CHARS);
 }
 
 /**
- * テンプレートに transcript を付加して prompt を組み立てる。
+ * Build the prompt by appending the transcript to the template.
  *
- * `now` はイベントハンドラで解決した時刻を注入する。内部で `new Date()` を
- * 再実行しないことで、0 時跨ぎに `{{ date }}` が存在チェック・タイトルと
- * 別の日付へずれることを防ぐ（daily-limit の日付キーを 1 回に統一する）。
+ * `now` is the time resolved in the event handler and injected here. Avoid calling `new Date()`
+ * again inside to prevent `{{ date }}` from drifting to a different day across midnight,
+ * which would break the daily-limit date-key consistency.
  */
 export function buildPrompt(
   template: string,
@@ -216,8 +216,8 @@ export function buildPrompt(
 ): string {
   const replacedTemplate = replaceTemplateVariables(template, sessionId, now, outputDir);
 
-  // INCLUDE_TRANSCRIPT=false 時は transcript セクションごと省く。
-  // REDACT の設定に関わらず transcript 自体が prompt に入らない。
+  // When INCLUDE_TRANSCRIPT is false, omit the transcript section entirely.
+  // The transcript never enters the prompt, regardless of the REDACT setting.
   if (!includeTranscript || !transcript) {
     return replacedTemplate;
   }
@@ -242,13 +242,13 @@ async function logError(client: Logger, message: string, error: unknown): Promis
       },
     });
   } catch {
-    // ログ出力失敗で本処理を壊さないため、ここでは no-op とする。
+    // Do not let logging failures break the main flow; no-op here.
   }
 }
 
 /**
- * 前回トリガーから `windowMs` 以内かどうかの純粋述語。
- * モジュール内 Map に依存しないため、単体テストが容易。
+ * Pure predicate for whether the last trigger is within `windowMs`.
+ * Does not depend on the module-level Map, so it is easy to unit-test.
  */
 export function isWithinWindow(
   lastTriggeredAt: number | undefined,
@@ -275,11 +275,11 @@ function pruneExpiredGuards(nowMs: number, windowMs: number): void {
 }
 
 /**
- * 既定ファイル名 `{{ outputDir }}/{{ date }}_logbook.md` が既に存在するかを
- * ファイルベースで判定する（プロセス再起動を跨いで機能する）。
+ * File-based check for whether the default file `{{ outputDir }}/{{ date }}_logbook.md` already exists
+ * (survives process restarts).
  *
- * パス解決は loadTemplate と同じく `directory`（プラグイン起動ディレクトリ）
- * 基準。CWD に依存しないため、どのディレクトリから起動しても一貫する。
+ * Path resolution follows the same `directory` (plugin launch directory) basis as loadTemplate.
+ * Independent of CWD, so it is consistent no matter where it is launched from.
  */
 export function isDailyLogbookExists(directory: string, outputDir: string, date: string): boolean {
   const dailyLogbookPath = resolve(directory, outputDir, `${date}_logbook.md`);
@@ -314,18 +314,17 @@ export const DailyLogbookPlugin: Plugin = async ({ client, directory }) => {
         return;
       }
 
-      // 日付・出力先はこのイベント処理全体で1回だけ解決し、daily-limit の
-      // 存在チェック・プロンプト・タイトル生成で同じ値を使い回す。
-      // `now` をそのまま buildPrompt へ渡すことで、0 時跨ぎでも prompt 内の
-      // 日付が存在チェック・タイトルと一致し続ける。
+      // Resolve date and output directory once for the entire event handling,
+      // and reuse the same values for the existence check, prompt, and title.
+      // Passing `now` through to buildPrompt keeps the prompt date consistent with the check and title across midnight.
       const now = new Date();
       const { date } = formatDateTokens(now);
       const outputDir = getOutputDir();
       const isDailyLimited = isDailyLimitEnabled();
 
-      // daily-limit 有効時のみ、日付キーのグローバル in-flight ガードを確認する。
-      // 別セッションが同時に idle した場合、両方が存在チェックを通過すると
-      // 同日付の生成が二重に走ってしまうため、ここで抑制する。
+      // When daily-limit is enabled, check the date-keyed global in-flight guard.
+      // Without this, two different sessions idling at the same time could both pass the existence check
+      // and trigger duplicate generation for the same date.
       if (isDailyLimited && dailyLimitInFlightByDate.has(date)) {
         await logWarn(
           client,
@@ -354,9 +353,9 @@ export const DailyLogbookPlugin: Plugin = async ({ client, directory }) => {
           return;
         }
 
-        // daily-limit: 既定ファイル名が既に存在すれば当日中の再生成をスキップする。
-        // ファイルベース判定のためプロセス再起動を跨いで機能する。
-        // カスタムテンプレート使用時はファイル名パターンが変わって判定不能になるため非対応。
+        // Daily-limit: skip regeneration for the day if the default file already exists.
+        // File-based check so it survives process restarts.
+        // Not supported with a custom template because the file name pattern becomes unknown.
         if (isDailyLimited) {
           const customTemplatePath = process.env.OPENCODE_DAILY_LOGBOOK_TEMPLATE;
           if (customTemplatePath) {
@@ -397,9 +396,9 @@ export const DailyLogbookPlugin: Plugin = async ({ client, directory }) => {
         const includeTranscript = isTranscriptIncluded();
         const transcript = includeTranscript ? buildTranscript(messagesResult.data) : "";
 
-        // daily-limit 有効時は、エージェント（別プロセス）が CWD 基準でファイルを
-        // 書くため、存在チェックと同じ `directory` 基準の絶対パスを prompt に渡す。
-        // 無効時は従来どおり相対文字列を渡す（後方互換）。
+        // When daily-limit is enabled, the agent (a separate process) writes files relative to its CWD,
+        // so pass an absolute path resolved against `directory` to keep the prompt and the existence check aligned.
+        // When disabled, keep the relative string for backward compatibility.
         const promptOutputDir = isDailyLimited ? resolve(directory, outputDir) : outputDir;
         const prompt = buildPrompt(template, originalSessionId, transcript, includeTranscript, promptOutputDir, now);
 

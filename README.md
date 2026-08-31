@@ -13,7 +13,7 @@ An OpenCode plugin that automatically generates daily reports when a session bec
 - Auto-generates daily reports on `session.idle` events
 - Configurable output directory
 - Custom templates supported via environment variable
-- If the session includes mixed Japanese/English, prefer English in the generated logbook
+- Multi-language support via custom templates (output language is template-driven)
 
 ## Install
 

@@ -27,7 +27,7 @@ var SAMPLE_TEMPLATE = `Create a daily logbook based on the session {{ sessionId 
 - Do not overwrite existing files; append or update instead
 - Keep the logbook concise and focused on key points
 - Prioritize discussion highlights, decisions made, and next actions
-- If the session contains mixed Japanese/English, prefer English in the logbook
+- Output language is template-driven (this default template uses English)
 - Clearly separate facts from opinions (speculation/evaluation)`;
 var SECRET_PATTERNS = [
   /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,

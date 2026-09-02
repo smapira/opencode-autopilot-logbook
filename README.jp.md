@@ -14,6 +14,7 @@ OpenCode セッション終了時に、日報を自動生成するプラグイ�
 - 日報保存先を環境変数で変更可能
 - テンプレートのカスタマイズに対応（環境変数指定）
 - テンプレート駆動で出力、言語はテンプレートで自由に切り替え可能
+- `{{ usage }}` テンプレート変数で usage 統計（cost/tokens）を出力（`~/.local/share/opencode/opencode.db` から取得）
 
 ## インストール
 
@@ -162,6 +163,48 @@ export OPENCODE_DAILY_LOGBOOK_THROTTLE_MS=180000
 ```bash
 export OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT=true
 ```
+
+### `OPENCODE_DAILY_LOGBOOK_USAGE_PROJECT_ONLY`
+
+- 既定値: `true`（当該プロジェクトのみで集計）
+- `true` のときは現在のプロジェクト（`project.worktree` と `directory` の一致）で絞り込み、`"false"` のときは全プロジェクトで集計します
+- 無効化できるのは `"false"` の厳密一致のみ。それ以外の値は既定値（`true`）のままです
+- プロジェクトが解決できない場合（例: グローバル worktree `/`）は全プロジェクト集計にフォールバックします
+
+```bash
+export OPENCODE_DAILY_LOGBOOK_USAGE_PROJECT_ONLY=false
+```
+
+### `OPENCODE_DAILY_LOGBOOK_DB_PATH`
+
+- 既定値: `~/.local/share/opencode/opencode.db`
+- usage 統計の取得元となる OpenCode データベースのパスを上書きします
+- `read-only` で開きます。ファイルが存在しない・開けない場合は usage を空文字として日報生成は継続します
+
+```bash
+export OPENCODE_DAILY_LOGBOOK_DB_PATH="$HOME/.local/share/opencode/opencode.db"
+```
+
+## テンプレート変数
+
+`SAMPLE_TEMPLATE` およびカスタムテンプレートで利用できます:
+
+| 変数 | 説明 |
+|------|------|
+| `{{ sessionId }}` | 元セッション ID |
+| `{{ date }}` | `YYYYMMDD`（例: `20260902`） |
+| `{{ dateJp }}` | 日本語日付 `YYYY年M月D日` |
+| `{{ outputDir }}` | 出力ディレクトリ（相対/絶対、詳細は `OUTPUT_DIR` / `DAILY_LIMIT` を参照） |
+| `{{ usage }}` / `{{ usageTable }}` | usage 統計テーブル（cost/tokens）。`{{ usage }}` が canonical、`{{ usageTable }}` はエイリアス。`opencode.db` の `session` テーブル（`time_created` は ms epoch）から取得。詳細は `USAGE_PROJECT_ONLY` / `DB_PATH` を参照 |
+
+カスタムテンプレートでの使用例:
+
+```markdown
+## Usage
+{{ usage }}
+```
+
+データベースが存在しない・当日データが 0 件の場合は空文字に置換されます。
 
 ---
 

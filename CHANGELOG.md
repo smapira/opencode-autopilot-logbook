@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.2.0 (2026-09-02)
+
+### Added
+
+- Usage statistics via `{{ usage }}` / `{{ usageTable }}` template variables (canonical is `{{ usage }}`). `SAMPLE_TEMPLATE` now includes `## Usage` / `{{ usage }}` so daily reports show cost/tokens by default. Resolved from `~/.local/share/opencode/opencode.db` (`session` table, `time_created` in ms epoch) with `bun:sqlite` (`readonly: true`, `?` binding, `coalesce(sum,0)`). Table includes `Cost (本日/セッション)` / `Tokens Input / Output / Cache Read` / `Sessions (本日)` / `Total Cost (累計)` with `formatCost` (`$x.xx`) and `formatTokens` (`K/M/B`)
+- `OPENCODE_DAILY_LOGBOOK_USAGE_PROJECT_ONLY` (default `true`, only `"false"` disables; resolves `project.worktree` via `resolve(directory)`, falls back to all projects) and `OPENCODE_DAILY_LOGBOOK_DB_PATH` (default `~/.local/share/opencode/opencode.db`, `read-only` open, omitted on failure)
+- Unit/integration tests for `getUsageStats` (tmp file DB), `formatUsageTable`, `replaceTemplateVariables` (`$` safety), `buildPrompt` with usage, and `DailyLogbookPlugin` with usage. `PLUGIN_ENV_KEYS` now includes the two new env vars
+
+### Changed
+
+- Documented the new feature in both READMEs (`## Features` / `## 機能`, `## Template Variables` / `## テンプレート変数`, and the two new env var sections). `README.md` Features now lists usage statistics; template variable table includes `{{ usage }}` / `{{ usageTable }}`
+- `SAMPLE_TEMPLATE` is now exported and contains `## Usage` / `{{ usage }}`. Custom templates can place `{{ usage }}` at any position; when the database is unavailable or the day has no sessions, the variable is replaced with an empty string
+- `replaceTemplateVariables` / `buildPrompt` now use function-form `() => value` replacements to avoid `$` special expansion (`$2.31` safety)
+
 ## 1.1.1 (2026-08-30)
 
 ### Added

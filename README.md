@@ -14,6 +14,7 @@ An OpenCode plugin that automatically generates daily reports when a session bec
 - Configurable output directory
 - Custom templates supported via environment variable
 - Multi-language support via custom templates (output language is template-driven)
+- Usage statistics (cost/tokens) via `{{ usage }}` template variable (read from `~/.local/share/opencode/opencode.db`)
 
 ## Install
 
@@ -160,6 +161,48 @@ export OPENCODE_DAILY_LOGBOOK_THROTTLE_MS=180000
 ```bash
 export OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT=true
 ```
+
+### `OPENCODE_DAILY_LOGBOOK_USAGE_PROJECT_ONLY`
+
+- Default: `true`
+- When `true`, usage is aggregated for the current project only (resolved via `project.worktree` matching `directory`). When `"false"`, aggregates across all projects
+- Only the exact value `"false"` disables project filtering. Any other value keeps the default (`true`)
+- If the project cannot be resolved (e.g. global worktree `/`), falls back to all projects
+
+```bash
+export OPENCODE_DAILY_LOGBOOK_USAGE_PROJECT_ONLY=false
+```
+
+### `OPENCODE_DAILY_LOGBOOK_DB_PATH`
+
+- Default: `~/.local/share/opencode/opencode.db`
+- Override the path to the OpenCode database used for usage statistics
+- Opened `read-only`; if the file does not exist or cannot be opened, usage is omitted and the daily report is still generated
+
+```bash
+export OPENCODE_DAILY_LOGBOOK_DB_PATH="$HOME/.local/share/opencode/opencode.db"
+```
+
+## Template Variables
+
+Available in `SAMPLE_TEMPLATE` and custom templates:
+
+| Variable | Description |
+|----------|-------------|
+| `{{ sessionId }}` | Source session ID |
+| `{{ date }}` | `YYYYMMDD` (e.g. `20260902`) |
+| `{{ dateJp }}` | Japanese date `YYYY年M月D日` |
+| `{{ outputDir }}` | Output directory (relative or absolute, see `OUTPUT_DIR` / `DAILY_LIMIT`) |
+| `{{ usage }}` / `{{ usageTable }}` | Usage statistics table (cost/tokens). Canonical is `{{ usage }}`, `{{ usageTable }}` is an alias. Resolved from `opencode.db` (`session` table, `time_created` in ms). See `USAGE_PROJECT_ONLY` / `DB_PATH` |
+
+Example usage in a custom template:
+
+```markdown
+## Usage
+{{ usage }}
+```
+
+When the database is unavailable or the day has no sessions, the variable is replaced with an empty string.
 
 ## Output
 

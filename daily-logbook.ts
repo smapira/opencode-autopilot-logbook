@@ -1,5 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { homedir } from "node:os";
+import { basename, join, resolve } from "node:path";
+import { Database } from "bun:sqlite";
 import type { Plugin, PluginInput } from "@opencode-ai/plugin";
 
 const SERVICE_NAME = "daily-logbook-plugin";
@@ -21,7 +23,7 @@ function getOutputDir(): string {
   return process.env.OPENCODE_DAILY_LOGBOOK_OUTPUT_DIR || DEFAULT_OUTPUT_DIR;
 }
 
-const SAMPLE_TEMPLATE = `Create a daily logbook based on the session {{ sessionId }}.
+export const SAMPLE_TEMPLATE = `Create a daily logbook based on the session {{ sessionId }}.
 
 ## Steps
 
@@ -35,7 +37,10 @@ const SAMPLE_TEMPLATE = `Create a daily logbook based on the session {{ sessionI
 - Keep the logbook concise and focused on key points
 - Prioritize discussion highlights, decisions made, and next actions
 - Output language is template-driven (this default template uses English)
-- Clearly separate facts from opinions (speculation/evaluation)`;
+- Clearly separate facts from opinions (speculation/evaluation)
+
+## Usage
+{{ usage }}`;
 
 // Known secret patterns. Replacement follows array order.
 // The private-key block spans multiple lines, so it must be processed before other patterns
@@ -105,6 +110,166 @@ export function getThrottleWindowMs(): number {
   return parsedMs;
 }
 
+// ---------------------------------------------------------------------------
+// Usage stats
+// ---------------------------------------------------------------------------
+
+export function isUsageProjectOnly(): boolean {
+  return process.env.OPENCODE_DAILY_LOGBOOK_USAGE_PROJECT_ONLY !== "false";
+}
+
+export function getDbPath(): string {
+  const custom = process.env.OPENCODE_DAILY_LOGBOOK_DB_PATH;
+  if (custom && custom.trim() !== "") {
+    return custom;
+  }
+  return join(homedir(), ".local/share/opencode/opencode.db");
+}
+
+export type UsageStats = {
+  dayCost: number;
+  sessionCost: number | null;
+  tokensInput: number;
+  tokensOutput: number;
+  cacheRead: number;
+  sessionsToday: number;
+  totalCost: number;
+};
+
+export function getUsageStats(params: {
+  directory: string;
+  sessionId: string;
+  date: string;
+  projectOnly: boolean;
+  dbPath?: string;
+}): UsageStats | null {
+  const dbPath = params.dbPath ?? getDbPath();
+
+  if (!existsSync(dbPath)) {
+    return null;
+  }
+
+  let db: InstanceType<typeof Database> | null = null;
+  try {
+    db = new Database(dbPath, { readonly: true } as unknown as Record<string, unknown>);
+
+    const normalizedDir = resolve(params.directory);
+    let projectId: string | null = null;
+    try {
+      const projStmt = db.prepare("SELECT id FROM project WHERE worktree = ?");
+      const projRow = projStmt.get(normalizedDir) as { id: string } | undefined;
+      if (projRow) {
+        projectId = projRow.id;
+      }
+    } catch {
+      // Fallback to whole aggregation when project lookup fails.
+    }
+
+    const yyyyMmDd =
+      params.date.length === 8
+        ? `${params.date.slice(0, 4)}-${params.date.slice(4, 6)}-${params.date.slice(6, 8)}`
+        : params.date;
+
+    let dailyRow: {
+      sessionsToday: number;
+      dayCost: number;
+      tokensInput: number;
+      tokensOutput: number;
+      cacheRead: number;
+    } | undefined;
+
+    if (projectId && params.projectOnly) {
+      const stmt = db.prepare(
+        `SELECT count(*) as sessionsToday, coalesce(sum(cost),0) as dayCost, coalesce(sum(tokens_input),0) as tokensInput, coalesce(sum(tokens_output),0) as tokensOutput, coalesce(sum(tokens_cache_read),0) as cacheRead FROM session WHERE project_id = ? AND date(datetime(time_created/1000,'unixepoch','localtime')) = ?`,
+      );
+      dailyRow = stmt.get(projectId, yyyyMmDd) as typeof dailyRow;
+    } else {
+      const stmt = db.prepare(
+        `SELECT count(*) as sessionsToday, coalesce(sum(cost),0) as dayCost, coalesce(sum(tokens_input),0) as tokensInput, coalesce(sum(tokens_output),0) as tokensOutput, coalesce(sum(tokens_cache_read),0) as cacheRead FROM session WHERE date(datetime(time_created/1000,'unixepoch','localtime')) = ?`,
+      );
+      dailyRow = stmt.get(yyyyMmDd) as typeof dailyRow;
+    }
+
+    let totalRow: { totalCost: number } | undefined;
+    if (projectId && params.projectOnly) {
+      const stmt = db.prepare(`SELECT coalesce(sum(cost),0) as totalCost FROM session WHERE project_id = ?`);
+      totalRow = stmt.get(projectId) as typeof totalRow;
+    } else {
+      const stmt = db.prepare(`SELECT coalesce(sum(cost),0) as totalCost FROM session`);
+      totalRow = stmt.get() as typeof totalRow;
+    }
+
+    let sessionCost: number | null = null;
+    try {
+      const stmt = db.prepare(`SELECT cost FROM session WHERE id = ?`);
+      const row = stmt.get(params.sessionId) as { cost: number | null } | undefined;
+      if (row && row.cost !== null && row.cost !== undefined) {
+        sessionCost = Number(row.cost);
+      }
+    } catch {
+      sessionCost = null;
+    }
+
+    return {
+      dayCost: Number(dailyRow?.dayCost ?? 0),
+      tokensInput: Number(dailyRow?.tokensInput ?? 0),
+      tokensOutput: Number(dailyRow?.tokensOutput ?? 0),
+      cacheRead: Number(dailyRow?.cacheRead ?? 0),
+      sessionsToday: Number(dailyRow?.sessionsToday ?? 0),
+      totalCost: Number(totalRow?.totalCost ?? 0),
+      sessionCost,
+    };
+  } catch {
+    return null;
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      // ignore close errors
+    }
+  }
+}
+
+export function formatCost(value: number): string {
+  return `$${value.toFixed(2)}`;
+}
+
+export function formatTokens(value: number): string {
+  if (value >= 1_000_000_000) {
+    return `${(value / 1_000_000_000).toFixed(1)}B`;
+  }
+  if (value >= 1_000_000) {
+    return `${(value / 1_000_000).toFixed(1)}M`;
+  }
+  if (value >= 1_000) {
+    return `${(value / 1_000).toFixed(1)}K`;
+  }
+  return `${value}`;
+}
+
+export function formatUsageTable(
+  stats: UsageStats | null,
+  date: string,
+  projectDisplayName?: string,
+): string {
+  if (!stats) {
+    return "";
+  }
+  const displayDate =
+    date.length === 8 ? `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}` : date;
+  const heading = projectDisplayName
+    ? `## Usage — ${displayDate} (project: ${projectDisplayName})`
+    : `## Usage — ${displayDate}`;
+  const hasSessionCost = stats.sessionCost !== null && stats.sessionCost !== undefined;
+  const costLabel = hasSessionCost ? "Cost (本日/セッション)" : "Cost (本日)";
+  const costValue = hasSessionCost
+    ? `${formatCost(stats.dayCost)} / ${formatCost(stats.sessionCost as number)}`
+    : formatCost(stats.dayCost);
+  const tokensValue = `${formatTokens(stats.tokensInput)} / ${formatTokens(stats.tokensOutput)} / ${formatTokens(stats.cacheRead)}`;
+
+  return `${heading}\n| 項目 | 値 |\n|---|---|\n| ${costLabel} | ${costValue} |\n| Tokens Input / Output / Cache Read | ${tokensValue} |\n| Sessions (本日) | ${stats.sessionsToday} |\n| Total Cost (累計) | ${formatCost(stats.totalCost)} |`;
+}
+
 function formatDateTokens(now: Date): { date: string; dateJp: string } {
   const year = now.getFullYear();
   const month = now.getMonth() + 1;
@@ -116,14 +281,22 @@ function formatDateTokens(now: Date): { date: string; dateJp: string } {
   };
 }
 
-function replaceTemplateVariables(template: string, sessionId: string, now: Date, outputDir: string): string {
+export function replaceTemplateVariables(
+  template: string,
+  sessionId: string,
+  now: Date,
+  outputDir: string,
+  usageTable?: string,
+): string {
   const { date, dateJp } = formatDateTokens(now);
 
   return template
-    .replace(/\{\{\s*sessionId\s*\}\}/g, sessionId)
-    .replace(/\{\{\s*date\s*\}\}/g, date)
-    .replace(/\{\{\s*dateJp\s*\}\}/g, dateJp)
-    .replace(/\{\{\s*outputDir\s*\}\}/g, outputDir);
+    .replace(/\{\{\s*sessionId\s*\}\}/g, () => sessionId)
+    .replace(/\{\{\s*date\s*\}\}/g, () => date)
+    .replace(/\{\{\s*dateJp\s*\}\}/g, () => dateJp)
+    .replace(/\{\{\s*outputDir\s*\}\}/g, () => outputDir)
+    .replace(/\{\{\s*usage\s*\}\}/g, () => usageTable ?? "")
+    .replace(/\{\{\s*usageTable\s*\}\}/g, () => usageTable ?? "");
 }
 
 function loadTemplate(directory: string): string {
@@ -213,21 +386,25 @@ export function buildPrompt(
   includeTranscript: boolean,
   outputDir: string,
   now: Date,
+  usageTable?: string,
 ): string {
-  const replacedTemplate = replaceTemplateVariables(template, sessionId, now, outputDir);
+  const replacedTemplate = replaceTemplateVariables(template, sessionId, now, outputDir, usageTable);
 
+  let basePrompt: string;
   // When INCLUDE_TRANSCRIPT is false, omit the transcript section entirely.
   // The transcript never enters the prompt, regardless of the REDACT setting.
   if (!includeTranscript || !transcript) {
-    return replacedTemplate;
-  }
-
-  return `${replacedTemplate}
+    basePrompt = replacedTemplate;
+  } else {
+    basePrompt = `${replacedTemplate}
 
 ---
 Below is an excerpt of the session ${sessionId} history. Create the daily logbook based on this history.
 
 ${transcript}`;
+  }
+
+  return basePrompt;
 }
 
 async function logError(client: Logger, message: string, error: unknown): Promise<void> {
@@ -372,6 +549,31 @@ export const DailyLogbookPlugin: Plugin = async ({ client, directory }) => {
           }
         }
 
+        // Usage stats retrieval (always). Must be after daily-limit guards to avoid
+        // unnecessary I/O and warn logs when generation is suppressed.
+        let usageTable: string | undefined;
+        try {
+          const stats = getUsageStats({
+            directory,
+            sessionId: originalSessionId,
+            date,
+            projectOnly: isUsageProjectOnly(),
+          });
+          if (stats) {
+            const projectDisplayName = basename(resolve(directory));
+            const displayDate = `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}`;
+            const table = formatUsageTable(stats, displayDate, projectDisplayName);
+            if (table) {
+              usageTable = table;
+            }
+          }
+        } catch (error) {
+          await logWarn(
+            client,
+            `Failed to get usage stats: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+
         let template = SAMPLE_TEMPLATE;
         try {
           template = loadTemplate(directory);
@@ -400,7 +602,15 @@ export const DailyLogbookPlugin: Plugin = async ({ client, directory }) => {
         // so pass an absolute path resolved against `directory` to keep the prompt and the existence check aligned.
         // When disabled, keep the relative string for backward compatibility.
         const promptOutputDir = isDailyLimited ? resolve(directory, outputDir) : outputDir;
-        const prompt = buildPrompt(template, originalSessionId, transcript, includeTranscript, promptOutputDir, now);
+        const prompt = buildPrompt(
+          template,
+          originalSessionId,
+          transcript,
+          includeTranscript,
+          promptOutputDir,
+          now,
+          usageTable,
+        );
 
         const generatedSessionResult = await client.session.create({
           body: {

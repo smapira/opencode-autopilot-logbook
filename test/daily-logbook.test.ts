@@ -1,15 +1,24 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { basename, join, resolve } from "node:path";
+import { Database } from "bun:sqlite";
 
 import {
   buildPrompt,
   buildTranscript,
+  formatCost,
+  formatTokens,
+  formatUsageTable,
+  getDbPath,
   getThrottleWindowMs,
+  getUsageStats,
   isDailyLogbookExists,
+  isUsageProjectOnly,
   isWithinWindow,
   maskSecrets,
+  replaceTemplateVariables,
+  SAMPLE_TEMPLATE,
 } from "../daily-logbook";
 import { DailyLogbookPlugin } from "../daily-logbook";
 
@@ -278,6 +287,8 @@ const PLUGIN_ENV_KEYS = [
   "OPENCODE_DAILY_LOGBOOK_OUTPUT_DIR",
   "OPENCODE_DAILY_LOGBOOK_REDACT",
   "OPENCODE_DAILY_LOGBOOK_INCLUDE_TRANSCRIPT",
+  "OPENCODE_DAILY_LOGBOOK_USAGE_PROJECT_ONLY",
+  "OPENCODE_DAILY_LOGBOOK_DB_PATH",
 ] as const;
 
 function snapshotPluginEnv(): Array<[string, string | undefined]> {
@@ -554,5 +565,678 @@ describe("DailyLogbookPlugin error-path guard release", () => {
     await idleEvent(eventHandler, "session-b");
 
     expect(getPromptCount()).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 4,5,2,3,1 : usage-append 追加機能
+// ---------------------------------------------------------------------------
+
+describe("env helpers", () => {
+  let envSnapshot: Array<[string, string | undefined]>;
+
+  beforeEach(() => {
+    envSnapshot = snapshotPluginEnv();
+  });
+
+  afterEach(() => {
+    restorePluginEnv(envSnapshot);
+  });
+
+  test("isUsageProjectOnly returns false only for exact 'false'", () => {
+    delete process.env.OPENCODE_DAILY_LOGBOOK_USAGE_PROJECT_ONLY;
+    expect(isUsageProjectOnly()).toBe(true);
+    process.env.OPENCODE_DAILY_LOGBOOK_USAGE_PROJECT_ONLY = "false";
+    expect(isUsageProjectOnly()).toBe(false);
+    process.env.OPENCODE_DAILY_LOGBOOK_USAGE_PROJECT_ONLY = "true";
+    expect(isUsageProjectOnly()).toBe(true);
+    process.env.OPENCODE_DAILY_LOGBOOK_USAGE_PROJECT_ONLY = "False";
+    expect(isUsageProjectOnly()).toBe(true);
+    process.env.OPENCODE_DAILY_LOGBOOK_USAGE_PROJECT_ONLY = "";
+    expect(isUsageProjectOnly()).toBe(true);
+  });
+
+  test("getDbPath returns custom path when env is set, otherwise default", () => {
+    delete process.env.OPENCODE_DAILY_LOGBOOK_DB_PATH;
+    expect(getDbPath()).toBe(join(homedir(), ".local/share/opencode/opencode.db"));
+    process.env.OPENCODE_DAILY_LOGBOOK_DB_PATH = "/tmp/custom.db";
+    expect(getDbPath()).toBe("/tmp/custom.db");
+    process.env.OPENCODE_DAILY_LOGBOOK_DB_PATH = "";
+    expect(getDbPath()).toBe(join(homedir(), ".local/share/opencode/opencode.db"));
+    process.env.OPENCODE_DAILY_LOGBOOK_DB_PATH = "   ";
+    expect(getDbPath()).toBe(join(homedir(), ".local/share/opencode/opencode.db"));
+  });
+});
+
+describe("formatCost / formatTokens", () => {
+  test("formatCost formats to $x.xx", () => {
+    expect(formatCost(2.31)).toBe("$2.31");
+    expect(formatCost(0)).toBe("$0.00");
+    expect(formatCost(1314.5)).toBe("$1314.50");
+  });
+
+  test("formatTokens formats with K/M/B suffix", () => {
+    expect(formatTokens(999)).toBe("999");
+    expect(formatTokens(1000)).toBe("1.0K");
+    expect(formatTokens(45_000)).toBe("45.0K");
+    expect(formatTokens(890_000)).toBe("890.0K");
+    expect(formatTokens(1_200_000)).toBe("1.2M");
+    expect(formatTokens(1_500_000_000)).toBe("1.5B");
+  });
+});
+
+describe("formatUsageTable", () => {
+  test("returns empty string when stats is null", () => {
+    expect(formatUsageTable(null, "20260902")).toBe("");
+    expect(formatUsageTable(null, "2026-09-02")).toBe("");
+  });
+
+  test("formats table with session cost and project name", () => {
+    const stats = {
+      dayCost: 2.31,
+      sessionCost: 0.21,
+      tokensInput: 1_200_000,
+      tokensOutput: 45_000,
+      cacheRead: 890_000,
+      sessionsToday: 3,
+      totalCost: 1314.5,
+    };
+    const table = formatUsageTable(stats, "20260902", "opencode-autopilot-logbook");
+    expect(table).toContain("## Usage — 2026-09-02 (project: opencode-autopilot-logbook)");
+    expect(table).toContain("| Cost (本日/セッション) | $2.31 / $0.21 |");
+    expect(table).toContain("| Tokens Input / Output / Cache Read | 1.2M / 45.0K / 890.0K |");
+    expect(table).toContain("| Sessions (本日) | 3 |");
+    expect(table).toContain("| Total Cost (累計) | $1314.50 |");
+    expect(table).toContain("| 項目 | 値 |");
+  });
+
+  test("formats table without session cost (omits session part)", () => {
+    const stats = {
+      dayCost: 2.31,
+      sessionCost: null,
+      tokensInput: 500,
+      tokensOutput: 200,
+      cacheRead: 0,
+      sessionsToday: 1,
+      totalCost: 10,
+    };
+    const table = formatUsageTable(stats, "20260902");
+    expect(table).toContain("## Usage — 2026-09-02");
+    expect(table).not.toContain("(project:");
+    expect(table).toContain("| Cost (本日) | $2.31 |");
+    expect(table).not.toContain("Cost (本日/セッション)");
+  });
+
+  test("accepts already hyphenated date", () => {
+    const stats = {
+      dayCost: 1,
+      sessionCost: null,
+      tokensInput: 0,
+      tokensOutput: 0,
+      cacheRead: 0,
+      sessionsToday: 0,
+      totalCost: 0,
+    };
+    const table = formatUsageTable(stats, "2026-09-02", "myproj");
+    expect(table).toContain("## Usage — 2026-09-02 (project: myproj)");
+  });
+});
+
+describe("replaceTemplateVariables with usage", () => {
+  const fixedNow = new Date(2026, 8, 2, 10, 0, 0); // 2026-09-02
+
+  test("replaces {{ usage }} and {{ usageTable }} with usageTable (including $)", () => {
+    const template = "hello {{ usage }} world";
+    const result = replaceTemplateVariables(template, "sess-1", fixedNow, "artifacts/daily", "| Cost | $2.31 |");
+    expect(result).toBe("hello | Cost | $2.31 | world");
+    // $ が capture 参照で壊れないこと
+    expect(result).toContain("$2.31");
+  });
+
+  test("replaces {{ usageTable }} alias", () => {
+    const template = "hello {{ usageTable }} world";
+    const result = replaceTemplateVariables(template, "sess-1", fixedNow, "artifacts/daily", "| Cost | $2.31 |");
+    expect(result).toBe("hello | Cost | $2.31 | world");
+  });
+
+  test("replaces multiple occurrences of usage placeholders", () => {
+    const template = "{{ usage }} and {{ usageTable }} and {{ usage }}";
+    const result = replaceTemplateVariables(template, "sess-1", fixedNow, "artifacts/daily", "X $1.00");
+    expect(result).toBe("X $1.00 and X $1.00 and X $1.00");
+  });
+
+  test("replaces with empty string when usageTable is undefined", () => {
+    const template = "hello {{ usage }} world";
+    const result = replaceTemplateVariables(template, "sess-1", fixedNow, "artifacts/daily", undefined);
+    expect(result).toBe("hello  world");
+  });
+
+  test("replaces with empty string when usageTable is empty", () => {
+    const template = "hello {{ usage }} world";
+    const result = replaceTemplateVariables(template, "sess-1", fixedNow, "artifacts/daily", "");
+    expect(result).toBe("hello  world");
+  });
+
+  test("function form prevents $ expansion for existing vars", () => {
+    // sessionId に $ を含むと従来の string 置換では壊れるが、関数形式なら安全
+    const template = "id={{ sessionId }}";
+    const result = replaceTemplateVariables(template, "$2.31", fixedNow, "artifacts/daily");
+    expect(result).toBe("id=$2.31");
+  });
+
+  test("replaces all placeholders including date and usage together", () => {
+    const template = "{{ date }} {{ usage }} {{ sessionId }}";
+    const result = replaceTemplateVariables(template, "sess-abc", fixedNow, "out", "U $5.00");
+    expect(result).toContain("20260902");
+    expect(result).toContain("U $5.00");
+    expect(result).toContain("sess-abc");
+  });
+});
+
+describe("SAMPLE_TEMPLATE", () => {
+  test("contains {{ usage }} placeholder", () => {
+    expect(SAMPLE_TEMPLATE).toContain("{{ usage }}");
+    expect(SAMPLE_TEMPLATE).toContain("## Usage");
+  });
+});
+
+describe("buildPrompt with usage", () => {
+  const fixedNow = new Date(2026, 8, 2, 10, 0, 0); // 2026-09-02 local
+
+  test("replaces {{ usage }} with usageTable via template", () => {
+    const template = "Hello {{ usage }}";
+    const usageTable = "## Usage — 2026-09-02\n| Cost | $2.31 |";
+    const prompt = buildPrompt(template, "sess-1", "", false, "artifacts/daily", fixedNow, usageTable);
+    expect(prompt).toBe("Hello ## Usage — 2026-09-02\n| Cost | $2.31 |");
+  });
+
+  test("replaces {{ usageTable }} alias", () => {
+    const template = "Hello {{ usageTable }}";
+    const usageTable = "TABLE $1.00";
+    const prompt = buildPrompt(template, "sess-1", "", false, "artifacts/daily", fixedNow, usageTable);
+    expect(prompt).toBe("Hello TABLE $1.00");
+  });
+
+  test("replaces with empty string when usageTable is empty or undefined", () => {
+    const template = "Hello {{ usage }} world";
+    expect(buildPrompt(template, "sess-1", "", false, "artifacts/daily", fixedNow, "",)).toBe("Hello  world");
+    expect(buildPrompt(template, "sess-1", "", false, "artifacts/daily", fixedNow, undefined)).toBe("Hello  world");
+  });
+
+  test("usage placeholder replacement preserves $ via function form", () => {
+    const template = "Hi {{ usage }}";
+    const usageTable = "| Cost | $2.31 / $0.21 |";
+    const prompt = buildPrompt(template, "sess-1", "", false, "artifacts/daily", fixedNow, usageTable);
+    expect(prompt).toContain("$2.31 / $0.21");
+  });
+
+  test("detects placeholder with spaces", () => {
+    const template = "Hello {{  usage  }}";
+    const usageTable = "TABLE";
+    const prompt = buildPrompt(template, "sess-1", "", false, "artifacts/daily", fixedNow, usageTable);
+    expect(prompt).toBe("Hello TABLE");
+  });
+
+  test("template without usage placeholder renders without usage", () => {
+    const template = "Hello {{ sessionId }}";
+    const usageTable = "## Usage — 2026-09-02\n| Cost | $2.31 |";
+    const prompt = buildPrompt(template, "sess-1", "", false, "artifacts/daily", fixedNow, usageTable);
+    // usageTable があってもテンプレに placeholder がなければ含まれない（自動追記はしない）
+    expect(prompt).toBe("Hello sess-1");
+    expect(prompt).not.toContain("## Usage");
+  });
+
+  test("includes usage when template has placeholder and transcript is included", () => {
+    const template = "Template {{ date }} {{ usage }}";
+    const usageTable = "## Usage — 2026-09-02 | $1.00";
+    const prompt = buildPrompt(template, "sess-1", "[User]\nhello", true, "artifacts/daily", fixedNow, usageTable);
+    expect(prompt).toContain("[User]\nhello");
+    expect(prompt).toContain("## Usage — 2026-09-02");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getUsageStats with tmp file DB
+// ---------------------------------------------------------------------------
+
+function createTmpDb(dbPath: string): void {
+  const db = new Database(dbPath);
+  db.exec(`
+    CREATE TABLE project (id TEXT PRIMARY KEY, worktree TEXT);
+    CREATE TABLE session (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      cost REAL,
+      tokens_input INTEGER,
+      tokens_output INTEGER,
+      tokens_cache_read INTEGER,
+      time_created INTEGER
+    );
+  `);
+  db.close();
+}
+
+function insertProject(dbPath: string, id: string, worktree: string): void {
+  const db = new Database(dbPath);
+  db.prepare("INSERT INTO project (id, worktree) VALUES (?, ?)").run(id, worktree);
+  db.close();
+}
+
+function insertSession(
+  dbPath: string,
+  row: {
+    id: string;
+    project_id: string | null;
+    cost: number;
+    tokens_input: number;
+    tokens_output: number;
+    tokens_cache_read: number;
+    time_created: number;
+  },
+): void {
+  const db = new Database(dbPath);
+  db.prepare(
+    "INSERT INTO session (id, project_id, cost, tokens_input, tokens_output, tokens_cache_read, time_created) VALUES (?, ?, ?, ?, ?, ?, ?)",
+  ).run(row.id, row.project_id, row.cost, row.tokens_input, row.tokens_output, row.tokens_cache_read, row.time_created);
+  db.close();
+}
+
+describe("getUsageStats", () => {
+  let tmpDir: string;
+  let dbPath: string;
+  let envSnapshot: Array<[string, string | undefined]>;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "usage-stats-test-"));
+    dbPath = join(tmpDir, "test.db");
+    envSnapshot = snapshotPluginEnv();
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+    restorePluginEnv(envSnapshot);
+  });
+
+  test("returns null when DB file does not exist", () => {
+    const stats = getUsageStats({
+      directory: "/tmp/foo",
+      sessionId: "sess-1",
+      date: "20260902",
+      projectOnly: true,
+      dbPath: join(tmpDir, "nonexistent.db"),
+    });
+    expect(stats).toBeNull();
+  });
+
+  test("returns null when DB file does not exist via env path", () => {
+    process.env.OPENCODE_DAILY_LOGBOOK_DB_PATH = join(tmpDir, "nonexistent2.db");
+    const stats = getUsageStats({
+      directory: "/tmp/foo",
+      sessionId: "sess-1",
+      date: "20260902",
+      projectOnly: true,
+    });
+    expect(stats).toBeNull();
+  });
+
+  test("aggregates daily and total for projectOnly true", () => {
+    createTmpDb(dbPath);
+    const worktree = join(tmpDir, "myproj");
+    mkdirSync(worktree, { recursive: true });
+    const projectId = "proj-1";
+    insertProject(dbPath, projectId, resolve(worktree));
+
+    // today local noon
+    const todayMs = new Date(2026, 8, 2, 12, 0, 0).getTime();
+    const yesterdayMs = new Date(2026, 8, 1, 12, 0, 0).getTime();
+    insertSession(dbPath, {
+      id: "sess-1",
+      project_id: projectId,
+      cost: 0.21,
+      tokens_input: 1_200_000,
+      tokens_output: 45_000,
+      tokens_cache_read: 890_000,
+      time_created: todayMs,
+    });
+    insertSession(dbPath, {
+      id: "sess-2",
+      project_id: projectId,
+      cost: 2.1,
+      tokens_input: 500,
+      tokens_output: 200,
+      tokens_cache_read: 0,
+      time_created: todayMs + 1000,
+    });
+    // different day, same project
+    insertSession(dbPath, {
+      id: "sess-3",
+      project_id: projectId,
+      cost: 5.0,
+      tokens_input: 100,
+      tokens_output: 100,
+      tokens_cache_read: 100,
+      time_created: yesterdayMs,
+    });
+    // other project today (should be excluded when projectOnly true)
+    const otherProjectId = "proj-other";
+    insertProject(dbPath, otherProjectId, "/other/worktree");
+    insertSession(dbPath, {
+      id: "sess-other",
+      project_id: otherProjectId,
+      cost: 99.0,
+      tokens_input: 999,
+      tokens_output: 999,
+      tokens_cache_read: 999,
+      time_created: todayMs,
+    });
+
+    const stats = getUsageStats({
+      directory: worktree,
+      sessionId: "sess-1",
+      date: "20260902",
+      projectOnly: true,
+      dbPath,
+    });
+
+    expect(stats).not.toBeNull();
+    expect(stats!.sessionsToday).toBe(2);
+    expect(stats!.dayCost).toBeCloseTo(2.31, 5);
+    expect(stats!.tokensInput).toBe(1_200_500);
+    expect(stats!.tokensOutput).toBe(45_200);
+    expect(stats!.cacheRead).toBe(890_000);
+    // totalCost is project-scoped when projectOnly true: 0.21+2.1+5.0 = 7.31
+    expect(stats!.totalCost).toBeCloseTo(7.31, 5);
+    expect(stats!.sessionCost).toBeCloseTo(0.21, 5);
+  });
+
+  test("aggregates whole DB when projectOnly false", () => {
+    createTmpDb(dbPath);
+    const worktree = join(tmpDir, "myproj2");
+    mkdirSync(worktree, { recursive: true });
+    const projectId = "proj-1";
+    insertProject(dbPath, projectId, resolve(worktree));
+    const todayMs = new Date(2026, 8, 2, 12, 0, 0).getTime();
+    insertSession(dbPath, {
+      id: "sess-1",
+      project_id: projectId,
+      cost: 1,
+      tokens_input: 100,
+      tokens_output: 100,
+      tokens_cache_read: 100,
+      time_created: todayMs,
+    });
+    const otherProjectId = "proj-other";
+    insertProject(dbPath, otherProjectId, "/other2");
+    insertSession(dbPath, {
+      id: "sess-other",
+      project_id: otherProjectId,
+      cost: 99,
+      tokens_input: 999,
+      tokens_output: 999,
+      tokens_cache_read: 999,
+      time_created: todayMs,
+    });
+
+    const stats = getUsageStats({
+      directory: worktree,
+      sessionId: "sess-1",
+      date: "20260902",
+      projectOnly: false,
+      dbPath,
+    });
+
+    expect(stats!.sessionsToday).toBe(2);
+    expect(stats!.dayCost).toBeCloseTo(100, 5);
+    expect(stats!.totalCost).toBeCloseTo(100, 5);
+  });
+
+  test("falls back to whole aggregation when project not found (unknown directory)", () => {
+    createTmpDb(dbPath);
+    const todayMs = new Date(2026, 8, 2, 12, 0, 0).getTime();
+    insertSession(dbPath, {
+      id: "sess-1",
+      project_id: null,
+      cost: 1.5,
+      tokens_input: 10,
+      tokens_output: 10,
+      tokens_cache_read: 10,
+      time_created: todayMs,
+    });
+    insertSession(dbPath, {
+      id: "sess-2",
+      project_id: null,
+      cost: 2.5,
+      tokens_input: 20,
+      tokens_output: 20,
+      tokens_cache_read: 20,
+      time_created: todayMs,
+    });
+
+    const stats = getUsageStats({
+      directory: "/unknown/path/that/does/not/exist",
+      sessionId: "sess-1",
+      date: "20260902",
+      projectOnly: true,
+      dbPath,
+    });
+
+    expect(stats!.sessionsToday).toBe(2);
+    expect(stats!.dayCost).toBeCloseTo(4.0, 5);
+  });
+
+  test("normalizes directory with trailing slash", () => {
+    createTmpDb(dbPath);
+    const worktree = join(tmpDir, "myproj3");
+    mkdirSync(worktree, { recursive: true });
+    const projectId = "proj-1";
+    // DB に保存される worktree は resolve 済み（末尾スラッシュなし）
+    insertProject(dbPath, projectId, resolve(worktree));
+    const todayMs = new Date(2026, 8, 2, 12, 0, 0).getTime();
+    insertSession(dbPath, {
+      id: "sess-1",
+      project_id: projectId,
+      cost: 1,
+      tokens_input: 100,
+      tokens_output: 100,
+      tokens_cache_read: 100,
+      time_created: todayMs,
+    });
+    // 末尾スラッシュ付きで問い合わせても一致すること
+    const stats = getUsageStats({
+      directory: worktree + "/",
+      sessionId: "sess-1",
+      date: "20260902",
+      projectOnly: true,
+      dbPath,
+    });
+    expect(stats!.sessionsToday).toBe(1);
+    expect(stats!.totalCost).toBeCloseTo(1, 5);
+  });
+
+  test("returns sessionCost null when sessionId not found", () => {
+    createTmpDb(dbPath);
+    const worktree = join(tmpDir, "myproj4");
+    mkdirSync(worktree, { recursive: true });
+    insertProject(dbPath, "proj-1", resolve(worktree));
+    const todayMs = new Date(2026, 8, 2, 12, 0, 0).getTime();
+    insertSession(dbPath, {
+      id: "sess-existing",
+      project_id: "proj-1",
+      cost: 1,
+      tokens_input: 10,
+      tokens_output: 10,
+      tokens_cache_read: 10,
+      time_created: todayMs,
+    });
+
+    const stats = getUsageStats({
+      directory: worktree,
+      sessionId: "nonexistent",
+      date: "20260902",
+      projectOnly: true,
+      dbPath,
+    });
+    expect(stats!.sessionCost).toBeNull();
+    expect(stats!.dayCost).toBeCloseTo(1, 5);
+  });
+
+  test("returns zero values when no sessions for today", () => {
+    createTmpDb(dbPath);
+    const worktree = join(tmpDir, "myproj5");
+    mkdirSync(worktree, { recursive: true });
+    insertProject(dbPath, "proj-1", resolve(worktree));
+    const yesterdayMs = new Date(2026, 8, 1, 12, 0, 0).getTime();
+    insertSession(dbPath, {
+      id: "sess-old",
+      project_id: "proj-1",
+      cost: 5,
+      tokens_input: 10,
+      tokens_output: 10,
+      tokens_cache_read: 10,
+      time_created: yesterdayMs,
+    });
+
+    const stats = getUsageStats({
+      directory: worktree,
+      sessionId: "sess-old",
+      date: "20260902",
+      projectOnly: true,
+      dbPath,
+    });
+    expect(stats!.sessionsToday).toBe(0);
+    expect(stats!.dayCost).toBe(0);
+    expect(stats!.tokensInput).toBe(0);
+    // totalCost は累計なので 5
+    expect(stats!.totalCost).toBeCloseTo(5, 5);
+  });
+
+  test("uses env DB path when dbPath param omitted", () => {
+    createTmpDb(dbPath);
+    const worktree = join(tmpDir, "myproj6");
+    mkdirSync(worktree, { recursive: true });
+    insertProject(dbPath, "proj-1", resolve(worktree));
+    const todayMs = new Date(2026, 8, 2, 12, 0, 0).getTime();
+    insertSession(dbPath, {
+      id: "sess-1",
+      project_id: "proj-1",
+      cost: 3.14,
+      tokens_input: 100,
+      tokens_output: 100,
+      tokens_cache_read: 100,
+      time_created: todayMs,
+    });
+    process.env.OPENCODE_DAILY_LOGBOOK_DB_PATH = dbPath;
+
+    const stats = getUsageStats({
+      directory: worktree,
+      sessionId: "sess-1",
+      date: "20260902",
+      projectOnly: true,
+    });
+    expect(stats!.dayCost).toBeCloseTo(3.14, 5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Plugin integration with usage (integration but via mocked client + tmp DB)
+// ---------------------------------------------------------------------------
+
+describe("DailyLogbookPlugin usage integration", () => {
+  let tmpDir: string;
+  let envSnapshot: Array<[string, string | undefined]>;
+  let dbPath: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "logbook-usage-plugin-test-"));
+    envSnapshot = snapshotPluginEnv();
+    dbPath = join(tmpDir, "usage.db");
+    process.env[THROTTLE_ENV] = "0";
+    process.env.OPENCODE_DAILY_LOGBOOK_DB_PATH = dbPath;
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+    restorePluginEnv(envSnapshot);
+  });
+
+  test("appends usage table to prompt when DB exists (projectOnly true, via default template)", async () => {
+    createTmpDb(dbPath);
+    const projectId = "proj-1";
+    insertProject(dbPath, projectId, resolve(tmpDir));
+    const today = new Date();
+    const todayMs = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 12, 0, 0).getTime();
+    insertSession(dbPath, {
+      id: "session-a",
+      project_id: projectId,
+      cost: 0.5,
+      tokens_input: 1000,
+      tokens_output: 500,
+      tokens_cache_read: 200,
+      time_created: todayMs,
+    });
+
+    const { eventHandler, promptTexts } = await createPluginHarness(tmpDir);
+    await idleEvent(eventHandler, "session-a");
+    expect(promptTexts.length).toBe(1);
+    const prompt = promptTexts[0];
+    expect(prompt).toContain("## Usage —");
+    expect(prompt).toContain("$0.50");
+    // basename が含まれるか
+    expect(prompt).toContain(basename(resolve(tmpDir)));
+  });
+
+  test("still generates logbook when DB is missing (graceful fallback)", async () => {
+    // DB を作らない
+    const { eventHandler, promptTexts } = await createPluginHarness(tmpDir);
+    await idleEvent(eventHandler, "session-a");
+    expect(promptTexts.length).toBe(1);
+    // usage がないので Usage 見出しは含まない（{{ usage }} は空文字に置換）
+    expect(promptTexts[0]).not.toContain("## Usage —");
+  });
+
+  test("respects usage template placeholder (custom template)", async () => {
+    createTmpDb(dbPath);
+    const projectId = "proj-1";
+    insertProject(dbPath, projectId, resolve(tmpDir));
+    const today = new Date();
+    const todayMs = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 12, 0, 0).getTime();
+    insertSession(dbPath, {
+      id: "session-a",
+      project_id: projectId,
+      cost: 1.23,
+      tokens_input: 100,
+      tokens_output: 100,
+      tokens_cache_read: 100,
+      time_created: todayMs,
+    });
+    // カスタムテンプレートに {{ usage }} を配置
+    const templatePath = join(tmpDir, "template.md");
+    writeFileSync(templatePath, "Header {{ usage }} Footer");
+    process.env.OPENCODE_DAILY_LOGBOOK_TEMPLATE = templatePath;
+
+    const { eventHandler, promptTexts } = await createPluginHarness(tmpDir);
+    await idleEvent(eventHandler, "session-a");
+    const prompt = promptTexts[0];
+    // 置換されている
+    expect(prompt).toContain("## Usage —");
+    // 二重に現れない（出現回数 1）
+    const usageCount = (prompt.match(/## Usage —/g) || []).length;
+    expect(usageCount).toBe(1);
+  });
+
+  test("does not open DB when daily-limit suppresses generation", async () => {
+    // daily-limit で suppress されるケースでは DB を開かない（不要な warn を出さない）
+    // ここでは既存ファイルを作って suppress させる
+    createTmpDb(dbPath);
+    const outputDir = join("artifacts", "daily");
+    mkdirSync(join(tmpDir, outputDir), { recursive: true });
+    const dateStr = todayDateString();
+    writeFileSync(join(tmpDir, outputDir, `${dateStr}_logbook.md`), "existing");
+    process.env[DAILY_LIMIT_ENV] = "true";
+
+    const { eventHandler, getPromptCount } = await createPluginHarness(tmpDir);
+    await idleEvent(eventHandler, "session-a");
+
+    expect(getPromptCount()).toBe(0);
   });
 });

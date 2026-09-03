@@ -61,6 +61,40 @@ npm uninstall -g opencode-autopilot-logbook
 rm -rf ~/.cache/opencode/packages/opencode-autopilot-logbook*
 ```
 
+## Compatibility
+
+### V1 (stable)
+
+- `opencode` 1.18.x (`anomalyco/opencode` via Homebrew) + `@opencode-ai/plugin ^1.0.0`
+- Current stable branch. No changes needed. `opencode.json` uses `plugin` or no `plugin` key (`.opencode` symlink).
+
+### V2 beta (dual support, `feature/v2-migration`)
+
+This plugin is now **dual-compatible**: the existing `DailyLogbookPlugin` (`Plugin = async ({ client, directory }) => ({ event })`) is kept, and `Plugin.define({ id: "smapira.daily-logbook", setup(ctx) })` for V2 is added. On stable 1.18.x the V1 path runs; on beta the V2 path runs via `handleV2IdleEvent` / `v2Setup`.
+
+**To test V2**
+
+```bash
+# on beta branch only
+npm i -D @opencode-ai/plugin@beta
+npx opencode@beta --version   # beta channel (opencode2 alias does not exist)
+opencode --standalone         # beta
+# then trigger session.idle → artifacts/daily/YYYYMMDD_logbook.md is generated
+```
+
+**Config** — V2 prefers `plugins` with object form in `opencode.json`:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [{ "package": "opencode-autopilot-logbook" }]
+}
+```
+
+Beta may still accept the V1 `plugin` key — E2E pending, see `CHANGELOG.md ## 2.0.0 Migration` and `daily-logbook.ts` API table (`event.data.sessionID` vs `properties`, `ctx.session.get({sessionID})` vs `path:{id}`, `ctx.app.log` → `console`).
+
+During beta the V2 API may still break. `package.json` stays on `^1.0.0` on `main`; switch to `beta` on the beta branch.
+
 ## Environment Variables
 
 All settings below are configured via environment variables. Set them **before launching OpenCode** and then restart OpenCode. Variables are read at startup.

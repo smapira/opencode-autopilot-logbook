@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.0.1 - fix: ESM-only beta detection via package.json (2026-09-03)
+
+### Fixed
+- **beta ESM-only 対応**: `@opencode-ai/plugin@beta` は `exports` が `import` のみで `require("@opencode-ai/plugin")` が `No "exports" main defined` で失敗するため、`createRequire` だけでは V2 を検出できず `default` が V1 にフォールバックしていた。`isBetaPluginAvailable()` を追加し `fileURLToPath(import.meta.url)` + `existsSync` + `readFileSync(package.json)` で `version` に `beta` を含むかで判定するように修正。これにより `npx @opencode-ai/cli@beta` (`opencode2 v0.0.0-beta-18999`) で `default` が `DailyLogbookPluginV2` (`smapira.daily-logbook`) を正しく返し、`ctx.event.subscribe({signal})=>AsyncIterable` + `event.data.sessionID` + `ctx.session.*` の V2 経路が発火する
+  - `tryCreateV2Plugin` のコメントを ESM フォールバックが beta ホストでも受理される旨に更新
+  - `bun test` は stable `1.18.27` (`^1.0.0`) で 85 pass を維持。`bun /tmp/test-v2.mjs` で beta 時に `default === V2` を、stable 時に `default === V1` を確認
+
+### E2E
+- beta E2E: `npx @opencode-ai/cli@beta --version` → `opencode2 v0.0.0-beta-18999`、`handleV2IdleEvent` と `v2Setup` のモック E2E (flat shapes, `subscribe({signal})`, `ctx.location.directory`, `console` sink) が PASS。`artifacts/daily` 生成は `handleV2IdleEvent` 単体および `v2Setup` の `AsyncIterable` 1件 yield で検証済み
+
 ## 2.0.0 - BREAKING: migrate to @opencode-ai/plugin beta (2026-09-03)
 
 ### BREAKING

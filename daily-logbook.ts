@@ -1,7 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Database } from "bun:sqlite";
 import type { Plugin, PluginInput } from "@opencode-ai/plugin";
 
@@ -1006,7 +1007,48 @@ async function v2Setup(ctx: unknown): Promise<(() => void) | void> {
   return () => controller.abort();
 }
 
+function isBetaPluginAvailable(): boolean {
+  // ESM-only beta (0.0.0-beta-*) は `require("@opencode-ai/plugin")` が
+  // `No "exports" main defined` で失敗するため、package.json の version で判定する。
+  try {
+    const currentFile = fileURLToPath(import.meta.url);
+    const candidates = [
+      join(dirname(currentFile), "..", "node_modules", "@opencode-ai", "plugin", "package.json"),
+      join(dirname(currentFile), "..", "..", "node_modules", "@opencode-ai", "plugin", "package.json"),
+      join(process.cwd(), "node_modules", "@opencode-ai", "plugin", "package.json"),
+    ];
+    for (const p of candidates) {
+      if (existsSync(p)) {
+        const pkg = JSON.parse(readFileSync(p, "utf-8")) as { version?: string };
+        if (typeof pkg.version === "string" && pkg.version.includes("beta")) {
+          return true;
+        }
+        // stable 1.x は V1
+        if (typeof pkg.version === "string" && pkg.version.startsWith("1.")) {
+          return false;
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+  // フォールバック: 旧来の require 判定（stable 1.x の CJS では成功する）
+  try {
+    const require = createRequire(import.meta.url);
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mod = require("@opencode-ai/plugin") as { Plugin?: { define?: unknown } };
+    if (mod?.Plugin?.define) {
+      return true;
+    }
+  } catch {
+    // ignore
+  }
+  return false;
+}
+
 function tryCreateV2Plugin(): unknown {
+  // beta 環境では ESM のため require が失敗するが、Plugin.define は identity なので
+  // plain object を返しても V2 ホストは受け付ける。可能なら define でラップを試みる。
   try {
     const require = createRequire(import.meta.url);
     // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -1016,9 +1058,9 @@ function tryCreateV2Plugin(): unknown {
       return define({ id: "smapira.daily-logbook", setup: v2Setup });
     }
   } catch {
-    // ignore – stable 1.x でも bun test が壊れないようにフォールバック
+    // ignore – ESM-only beta では require が失敗するためフォールバックへ
   }
-  // フォールバック: plain object（テストやV2未対応環境でも setup を検証可能）
+  // フォールバック: plain object（テストやV2未対応環境でも setup を検証可能、beta ホストでも受理される）
   return { id: "smapira.daily-logbook", setup: v2Setup };
 }
 
@@ -1027,7 +1069,11 @@ export const DailyLogbookPluginV2: unknown = tryCreateV2Plugin();
 // デュアル対応: V1の DailyLogbookPlugin は温存し、V2は DailyLogbookPluginV2 として提供。
 // default export は V2 が利用可能な環境では V2 プラグイン、そうでなければ V1 プラグインを返す。
 // V2ホストは default の Plugin.define 結果を、V1ホストは DailyLogbookPlugin を参照する。
+// ESM-only beta では require が失敗するため package.json version でも判定する。
 const _defaultExport: unknown = (() => {
+  if (isBetaPluginAvailable()) {
+    return DailyLogbookPluginV2;
+  }
   try {
     const require = createRequire(import.meta.url);
     const mod = require("@opencode-ai/plugin") as { Plugin?: { define?: unknown } };

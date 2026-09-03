@@ -557,49 +557,67 @@ async function v2Setup(ctx) {
   const sink = createV2LogSink();
   await sink.info?.(`daily-logbook plugin loaded (v2) app=${anyCtx.app?.name ?? "unknown"} ${anyCtx.app?.version ?? ""}`);
   const controller = new AbortController;
-  (async () => {
-    try {
-      const subscribe = anyCtx.event?.subscribe;
-      if (!subscribe) {
-        await sink.warn("event.subscribe not available; v2 plugin idle");
-        return;
-      }
-      let iterable;
-      try {
-        const raw = subscribe({ signal: controller.signal });
-        iterable = raw;
-      } catch {
-        await sink.warn("event.subscribe({signal}) failed; v2 plugin idle");
-        return;
-      }
-      if (!iterable || typeof iterable[Symbol.asyncIterator] !== "function") {
-        await sink.warn("event.subscribe did not return AsyncIterable; v2 plugin idle");
-        return;
-      }
-      for await (const event of iterable) {
-        if (event.type !== "session.idle")
-          continue;
-        const data = event.data;
-        const properties = event.properties;
-        const sessionID = data?.sessionID ?? properties?.sessionID;
-        if (!sessionID) {
-          await sink.warn("session.idle event missing sessionID; skipping");
-          continue;
-        }
-        if (!anyCtx.session) {
-          await sink.warn("ctx.session not available; skipping idle handling");
-          continue;
-        }
-        await handleV2IdleEvent({ sessionID, directory, sink, session: anyCtx.session });
-      }
-    } catch (error) {
-      const name = error?.name;
-      if (name === "AbortError")
-        return;
-      await sink.error("v2 event loop error", error);
-    }
-  })();
+  runV2EventLoop(anyCtx, sink, directory, controller);
   return () => controller.abort();
+}
+async function resolveV2Iterable(subscribe, signal, sink) {
+  const sub = subscribe;
+  if (!sub)
+    return;
+  try {
+    const raw = sub({ signal });
+    if (isAsyncIterable(raw))
+      return raw;
+    const raw2 = trySubscribeEffect(sub, sink);
+    if (raw2)
+      return raw2;
+  } catch {
+    const raw2 = trySubscribeEffect(sub, sink);
+    if (raw2)
+      return raw2;
+  }
+  return trySubscribeEffect(sub, sink);
+}
+function trySubscribeEffect(sub, _sink) {
+  try {
+    const raw2 = sub("session.idle");
+    if (isAsyncIterable(raw2))
+      return raw2;
+  } catch {}
+  return;
+}
+function isAsyncIterable(value) {
+  return !!value && typeof value[Symbol.asyncIterator] === "function";
+}
+async function runV2EventLoop(anyCtx, sink, directory, controller) {
+  try {
+    const iterable = await resolveV2Iterable(anyCtx.event?.subscribe, controller.signal, sink);
+    if (!iterable) {
+      await sink.warn("event.subscribe did not return AsyncIterable; v2 plugin idle");
+      return;
+    }
+    for await (const event of iterable) {
+      if (event.type !== "session.idle")
+        continue;
+      const data = event.data;
+      const properties = event.properties;
+      const sessionID = data?.sessionID ?? properties?.sessionID;
+      if (!sessionID) {
+        await sink.warn("session.idle event missing sessionID; skipping");
+        continue;
+      }
+      if (!anyCtx.session) {
+        await sink.warn("ctx.session not available; skipping idle handling");
+        continue;
+      }
+      await handleV2IdleEvent({ sessionID, directory, sink, session: anyCtx.session });
+    }
+  } catch (error) {
+    const name = error?.name;
+    if (name === "AbortError")
+      return;
+    await sink.error("v2 event loop error", error);
+  }
 }
 function tryCreateV2Plugin() {
   try {
@@ -610,7 +628,15 @@ function tryCreateV2Plugin() {
       return define({ id: "smapira.daily-logbook", setup: v2Setup });
     }
   } catch {}
-  return { id: "smapira.daily-logbook", setup: v2Setup };
+  try {
+    const require2 = createRequire(import.meta.url);
+    const modEffect = require2("@opencode-ai/plugin/effect");
+    const defineEffect = modEffect?.Plugin?.define;
+    if (typeof defineEffect === "function") {
+      return defineEffect({ id: "smapira.daily-logbook", effect: v2Setup });
+    }
+  } catch {}
+  return { id: "smapira.daily-logbook", setup: v2Setup, effect: v2Setup };
 }
 var DailyLogbookPluginV2 = tryCreateV2Plugin();
 var _hybridDefault = (() => {

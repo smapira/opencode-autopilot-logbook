@@ -664,7 +664,10 @@ async function v2Setup(ctx: unknown): Promise<(() => void) | void> {
     location?: { directory?: string };
     directory?: string;
     app?: { name?: string; version?: string; channel?: string };
-    event?: { subscribe?: (opts: { signal: AbortSignal }) => AsyncIterable<{ type: string; data?: unknown; properties?: unknown }> };
+    event?: {
+      subscribe?: ((opts: { signal: AbortSignal }) => AsyncIterable<{ type: string; data?: unknown; properties?: unknown }>) &
+        ((type: string) => unknown);
+    };
     session?: {
       get: (input: { sessionID: string }) => Promise<unknown>;
       context?: (input: { sessionID: string }) => Promise<unknown>;
@@ -679,26 +682,71 @@ async function v2Setup(ctx: unknown): Promise<(() => void) | void> {
   const sink = createV2LogSink();
   await sink.info?.(`daily-logbook plugin loaded (v2) app=${anyCtx.app?.name ?? "unknown"} ${anyCtx.app?.version ?? ""}`);
   const controller = new AbortController();
-  void (async () => {
-    try {
-      const subscribe = anyCtx.event?.subscribe;
-      if (!subscribe) {
-        await sink.warn("event.subscribe not available; v2 plugin idle");
-        return;
-      }
-      let iterable: AsyncIterable<{ type: string; data?: unknown; properties?: unknown }> | undefined;
-      try {
-        const raw = (subscribe as (opts: { signal: AbortSignal }) => unknown)({ signal: controller.signal });
-        iterable = raw as AsyncIterable<{ type: string; data?: unknown; properties?: unknown }>;
-      } catch {
-        await sink.warn("event.subscribe({signal}) failed; v2 plugin idle");
-        return;
-      }
-      if (!iterable || typeof (iterable as AsyncIterable<unknown>)[Symbol.asyncIterator] !== "function") {
-        await sink.warn("event.subscribe did not return AsyncIterable; v2 plugin idle");
-        return;
-      }
-      for await (const event of iterable as AsyncIterable<{ type: string; data?: unknown; properties?: unknown }>) {
+  void runV2EventLoop(anyCtx, sink, directory, controller);
+  return () => controller.abort();
+}
+
+async function resolveV2Iterable(
+  subscribe: unknown,
+  signal: AbortSignal,
+  sink: AppLogSink,
+): Promise<AsyncIterable<{ type: string; data?: unknown; properties?: unknown }> | undefined> {
+  const sub = subscribe as unknown as ((opts: { signal: AbortSignal }) => unknown) & ((type: string) => unknown);
+  if (!sub) return undefined;
+  // Try promise style first: subscribe({ signal })
+  try {
+    const raw = (sub as (opts: { signal: AbortSignal }) => unknown)({ signal });
+    if (isAsyncIterable(raw)) return raw as AsyncIterable<{ type: string; data?: unknown; properties?: unknown }>;
+    // If raw is not iterable, it may be effect host returning non-iterable; try effect style as fallback
+    const raw2 = trySubscribeEffect(sub, sink);
+    if (raw2) return raw2;
+  } catch {
+    const raw2 = trySubscribeEffect(sub, sink);
+    if (raw2) return raw2;
+  }
+  // If promise style threw or returned non-iterable, try effect style directly
+  return trySubscribeEffect(sub, sink);
+}
+
+function trySubscribeEffect(
+  sub: (type: string) => unknown,
+  _sink: AppLogSink,
+): AsyncIterable<{ type: string; data?: unknown; properties?: unknown }> | undefined {
+  try {
+    const raw2 = (sub as (type: string) => unknown)("session.idle");
+    if (isAsyncIterable(raw2)) return raw2 as AsyncIterable<{ type: string; data?: unknown; properties?: unknown }>;
+  } catch {}
+  return undefined;
+}
+
+function isAsyncIterable(value: unknown): boolean {
+  return !!value && typeof (value as AsyncIterable<unknown>)[Symbol.asyncIterator] === "function";
+}
+
+async function runV2EventLoop(
+  anyCtx: {
+    event?: { subscribe?: unknown };
+    session?: {
+      get: (input: { sessionID: string }) => Promise<unknown>;
+      context?: (input: { sessionID: string }) => Promise<unknown>;
+      messages?: (input: { path: { id: string } }) => Promise<unknown>;
+      create: (input: { title: string }) => Promise<unknown>;
+      prompt?: (input: { sessionID: string; text: string }) => Promise<unknown>;
+      generate?: (input: { sessionID: string; text: string }) => Promise<unknown>;
+      promptAsync?: (input: unknown) => Promise<unknown>;
+    };
+  },
+  sink: AppLogSink,
+  directory: string,
+  controller: AbortController,
+): Promise<void> {
+  try {
+    const iterable = await resolveV2Iterable(anyCtx.event?.subscribe, controller.signal, sink);
+    if (!iterable) {
+      await sink.warn("event.subscribe did not return AsyncIterable; v2 plugin idle");
+      return;
+    }
+    for await (const event of iterable as AsyncIterable<{ type: string; data?: unknown; properties?: unknown }>) {
         if (event.type !== "session.idle") continue;
         const data = (event as { data?: { sessionID?: string }; properties?: { sessionID?: string } }).data;
         const properties = (event as { data?: { sessionID?: string }; properties?: { sessionID?: string } }).properties;
@@ -718,8 +766,6 @@ async function v2Setup(ctx: unknown): Promise<(() => void) | void> {
       if (name === "AbortError") return;
       await sink.error("v2 event loop error", error);
     }
-  })();
-  return () => controller.abort();
 }
 
 function tryCreateV2Plugin(): unknown {
@@ -731,7 +777,15 @@ function tryCreateV2Plugin(): unknown {
       return define({ id: "smapira.daily-logbook", setup: v2Setup });
     }
   } catch {}
-  return { id: "smapira.daily-logbook", setup: v2Setup };
+  try {
+    const require = createRequire(import.meta.url);
+    const modEffect = require("@opencode-ai/plugin/effect") as { Plugin?: { define?: (p: { id: string; effect: (ctx: unknown) => unknown }) => unknown } };
+    const defineEffect = modEffect?.Plugin?.define;
+    if (typeof defineEffect === "function") {
+      return defineEffect({ id: "smapira.daily-logbook", effect: v2Setup as unknown as (ctx: unknown) => unknown });
+    }
+  } catch {}
+  return { id: "smapira.daily-logbook", setup: v2Setup, effect: v2Setup };
 }
 
 export const DailyLogbookPluginV2: unknown = tryCreateV2Plugin();

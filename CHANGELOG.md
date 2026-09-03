@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.4 - fix: support both subscribe styles for V2 host (2026-09-03)
+
+### Fixed
+- **V2 ホスト E2E 未達を修正**: `v2Setup` が `ctx.event.subscribe({signal})=>AsyncIterable` (promise) のみに対応し、`ctx.event.subscribe("session.idle")=>Stream` (effect) で呼ばれる `opencode2 v0.0.0-beta-18999` (`opencode2 -s`) では `event.subscribe did not return AsyncIterable` で idle していた。`v2Setup` を `subscribe({signal})` と `subscribe("session.idle")` の両方を試すようにし、`resolveV2Iterable`/`trySubscribeEffect`/`isAsyncIterable`/`runV2EventLoop` に抽出して複雑度 31→<20 に。`tryCreateV2Plugin` は `setup` と `effect` 両方の `Plugin.define` を試し、フォールバックは `{id, setup, effect}` で両ホストで検証を通過するようにした。モックで promise/effect 両スタイルの `handleV2IdleEvent` 呼び出しが PASS することを確認
+  - `package.json` は `^1.0.0` に戻し、`dist` は 24.79 KB に再ビルド。`npx eslint .` 0, `npx tsc --noEmit` 0, `bun test` 85 pass
+
 ## 2.0.3 - refactor: complexity 20 and dev env alignment (2026-09-03)
 
 ### Changed

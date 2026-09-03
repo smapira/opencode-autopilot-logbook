@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.0.2 - fix: hybrid default for V1/V2 host compatibility (2026-09-03)
+
+### Fixed
+- **opencode2 検証失敗を修正**: `opencode2 plugin update` が `Failed to check Server plugin "opencode-autopilot-logbook": Plugin must export a default definition with an id and an effect or setup function.` で失敗していた。原因はキャッシュ環境（`~/.cache/opencode/packages/.../dist/index.js`）では `node_modules/@opencode-ai/plugin/package.json` が存在せず `isBetaPluginAvailable()` が `false` を返し `default` が V1 関数（`id` なし）のままだったため、V2 ホストの `id`/`setup` 検証を通過しなかった
+  - `default` を V1 関数に `id`/`setup`/`effect` を付与したハイブリッド（callable かつ `id`/`setup` を持つ）に変更。これにより stable `1.18.27` では関数として呼び出され、beta `opencode2` では `id`/`setup` を持つ定義として両方のチェックを通過する
+  - `DailyLogbookPluginV2` は従来通り `{id, setup}` の plain object として温存
+
+### E2E
+- beta E2E再検証: `opencode2 plugin list` で `opencode-autopilot-logbook` が `plugins` に表示、`opencode2 plugin update` の `Failed to check` が解消されることを確認予定。`bun test` 85 pass、`dist 25.32 KB`
+
 ## 2.0.1 - fix: ESM-only beta detection via package.json (2026-09-03)
 
 ### Fixed

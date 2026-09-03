@@ -4,7 +4,6 @@ import { existsSync, readFileSync } from "fs";
 import { createRequire } from "module";
 import { homedir } from "os";
 import { basename, dirname, join, resolve } from "path";
-import { fileURLToPath } from "url";
 import { Database } from "bun:sqlite";
 var SERVICE_NAME = "daily-logbook-plugin";
 var GENERATED_TITLE_PREFIX = "[daily-logbook:auto]";
@@ -636,35 +635,6 @@ async function v2Setup(ctx) {
   })();
   return () => controller.abort();
 }
-function isBetaPluginAvailable() {
-  try {
-    const currentFile = fileURLToPath(import.meta.url);
-    const candidates = [
-      join(dirname(currentFile), "..", "node_modules", "@opencode-ai", "plugin", "package.json"),
-      join(dirname(currentFile), "..", "..", "node_modules", "@opencode-ai", "plugin", "package.json"),
-      join(process.cwd(), "node_modules", "@opencode-ai", "plugin", "package.json")
-    ];
-    for (const p of candidates) {
-      if (existsSync(p)) {
-        const pkg = JSON.parse(readFileSync(p, "utf-8"));
-        if (typeof pkg.version === "string" && pkg.version.includes("beta")) {
-          return true;
-        }
-        if (typeof pkg.version === "string" && pkg.version.startsWith("1.")) {
-          return false;
-        }
-      }
-    }
-  } catch {}
-  try {
-    const require2 = createRequire(import.meta.url);
-    const mod = require2("@opencode-ai/plugin");
-    if (mod?.Plugin?.define) {
-      return true;
-    }
-  } catch {}
-  return false;
-}
 function tryCreateV2Plugin() {
   try {
     const require2 = createRequire(import.meta.url);
@@ -677,20 +647,14 @@ function tryCreateV2Plugin() {
   return { id: "smapira.daily-logbook", setup: v2Setup };
 }
 var DailyLogbookPluginV2 = tryCreateV2Plugin();
-var _defaultExport = (() => {
-  if (isBetaPluginAvailable()) {
-    return DailyLogbookPluginV2;
-  }
-  try {
-    const require2 = createRequire(import.meta.url);
-    const mod = require2("@opencode-ai/plugin");
-    if (mod?.Plugin?.define) {
-      return DailyLogbookPluginV2;
-    }
-  } catch {}
-  return DailyLogbookPlugin;
+var _hybridDefault = (() => {
+  const fn = DailyLogbookPlugin;
+  fn["id"] = "smapira.daily-logbook";
+  fn["setup"] = v2Setup;
+  fn["effect"] = v2Setup;
+  return fn;
 })();
-var daily_logbook_default = _defaultExport;
+var daily_logbook_default = _hybridDefault;
 export {
   replaceTemplateVariables,
   maskSecrets,

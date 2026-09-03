@@ -1067,23 +1067,24 @@ function tryCreateV2Plugin(): unknown {
 export const DailyLogbookPluginV2: unknown = tryCreateV2Plugin();
 
 // デュアル対応: V1の DailyLogbookPlugin は温存し、V2は DailyLogbookPluginV2 として提供。
-// default export は V2 が利用可能な環境では V2 プラグイン、そうでなければ V1 プラグインを返す。
-// V2ホストは default の Plugin.define 結果を、V1ホストは DailyLogbookPlugin を参照する。
-// ESM-only beta では require が失敗するため package.json version でも判定する。
-const _defaultExport: unknown = (() => {
-  if (isBetaPluginAvailable()) {
-    return DailyLogbookPluginV2;
-  }
-  try {
-    const require = createRequire(import.meta.url);
-    const mod = require("@opencode-ai/plugin") as { Plugin?: { define?: unknown } };
-    if (mod?.Plugin?.define) {
-      return DailyLogbookPluginV2;
-    }
-  } catch {
-    // ignore
-  }
-  return DailyLogbookPlugin;
+// default export は V1/V2 両ホストで受理されるハイブリッドにする。
+// V1ホストは `default` を `async ({client,directory})=>({event})` として呼び出し、
+// V2ホストは `default.id` + `default.setup`/`default.effect` を持つ定義として検証する。
+// 関数に `id`/`setup` を付与すれば、V1では関数として、V2では定義オブジェクトとして
+// 両方のチェックを通過する（`Failed to check Server plugin` 対策）。
+// さらにキャッシュ環境（~/.cache/.../dist/index.js）では beta の package.json が
+//見つからず isBetaPluginAvailable() が false になるため、ハイブリッドで確実に V2 を提供する。
+const _hybridDefault: unknown = (() => {
+  const fn = DailyLogbookPlugin as unknown as Record<string, unknown> & typeof DailyLogbookPlugin;
+  // V2 識別子を付与（V2 ホストの id/setup 検証を通過）
+  (fn as Record<string, unknown>)["id"] = "smapira.daily-logbook";
+  (fn as Record<string, unknown>)["setup"] = v2Setup;
+  // effect 版も念のため（V2 effect ホストは setup/effect どちらか）
+  (fn as Record<string, unknown>)["effect"] = v2Setup;
+  return fn;
 })();
 
-export default _defaultExport as unknown as typeof DailyLogbookPlugin | typeof DailyLogbookPluginV2;
+// 後方互換: 旧来の分岐も温存しつつ、最終的な default はハイブリッドを返す。
+// これにより stable 1.18.x でも `bun test` は V1 関数として動作し、
+// beta 0.0.0-beta-* の opencode2 でも id/setup を持つため検証を通過する。
+export default _hybridDefault as unknown as typeof DailyLogbookPlugin | typeof DailyLogbookPluginV2;

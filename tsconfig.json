@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ESNext", "DOM"],
+    "types": ["node", "bun"],
+    "strict": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "declaration": false,
+    "sourceMap": false
+  },
+  "include": ["daily-logbook.ts", "test/**/*.ts", "daily-logbook.v2.ts"],
+  "exclude": ["node_modules", "dist", ".opencode", ".cache"]
+}

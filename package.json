@@ -29,7 +29,13 @@
     "bun": ">=1.0.0"
   },
   "devDependencies": {
-    "@opencode-ai/plugin": "^1.0.0"
+    "@eslint/js": "^10.0.1",
+    "@opencode-ai/plugin": "^1.0.0",
+    "@types/bun": "^1.4.0",
+    "@types/node": "^26.4.1",
+    "eslint": "^10.9.1",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.69.0"
   },
   "//": "V2 migration: switch to beta with `npm i -D @opencode-ai/plugin@beta` on beta branch (see CHANGELOG ## 2.0.0 - BREAKING). Current stable keeps ^1.0.0 so `bun test` stays green; V2 code uses dynamic import + fallback plain object.",
   "repository": {

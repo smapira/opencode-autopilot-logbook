@@ -1,0 +1,35 @@
+mkdir -p .githooks
+
+cat > .githooks/pre-commit <<'EOF'
+#!/usr/bin/env bash
+set -e
+
+echo "========================================"
+echo " Pre-commit Quality Check"
+echo "========================================"
+
+echo ""
+echo "[1/4] TypeScript type check"
+npx tsc --noEmit
+
+echo ""
+echo "[2/4] ESLint + Cyclomatic Complexity"
+npx eslint .
+
+echo ""
+echo "[3/4] Bun tests"
+bun test
+
+echo ""
+echo "[4/4] Circular dependency check"
+npx madge --circular --extensions ts --warning .
+
+echo ""
+echo "========================================"
+echo " ✓ All pre-commit checks passed"
+echo "========================================"
+EOF
+
+chmod +x .githooks/pre-commit
+
+git config core.hooksPath .githooks

@@ -1240,3 +1240,104 @@ describe("DailyLogbookPlugin usage integration", () => {
     expect(getPromptCount()).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// V2 Plugin (TASK-1〜4) – dual compatibility: handles flat shapes and data vs properties
+// ---------------------------------------------------------------------------
+
+import { DailyLogbookPluginV2, handleV2IdleEvent } from "../daily-logbook";
+
+describe("DailyLogbookPluginV2", () => {
+  test("exports V2 plugin with id smapira.daily-logbook and setup", async () => {
+    const v2 = DailyLogbookPluginV2 as { id?: string; setup?: unknown };
+    expect(v2.id).toBe("smapira.daily-logbook");
+    expect(typeof v2.setup).toBe("function");
+  });
+
+  test("handleV2IdleEvent uses flat V2 session shapes (get/context/create/prompt) and console sink", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "v2-flat-"));
+    const envSnapshot = snapshotPluginEnv();
+    process.env[THROTTLE_ENV] = "0";
+    delete process.env[DAILY_LIMIT_ENV];
+    try {
+      const promptTexts: string[] = [];
+      const sink = { warn: async () => {}, error: async () => {}, info: async () => {} };
+      const session = {
+        get: async (_input: { sessionID: string }) => ({ data: { title: "user session" } }),
+        context: async (_input: { sessionID: string }) => ({ data: [] as unknown[] }),
+        create: async (_input: { title: string }) => ({ data: { id: "gen-1" } }),
+        prompt: async (input: { sessionID: string; text: string }) => {
+          promptTexts.push(input.text);
+          return { data: {} };
+        },
+      };
+      await handleV2IdleEvent({ sessionID: "sess-v2-1", directory: tmpDir, sink, session });
+      expect(promptTexts.length).toBe(1);
+      // prompt は flat text で渡され、path/body ネストではない
+      expect(promptTexts[0]).toContain("sess-v2-1");
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+      restorePluginEnv(envSnapshot);
+    }
+  });
+
+  test("handleV2IdleEvent falls back to messages when context is absent (compat)", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "v2-compat-"));
+    const envSnapshot = snapshotPluginEnv();
+    process.env[THROTTLE_ENV] = "0";
+    try {
+      const promptTexts: string[] = [];
+      const sink = { warn: async () => {}, error: async () => {} };
+      const session: Parameters<typeof handleV2IdleEvent>[0]["session"] = {
+        get: async () => ({ data: { title: "t" } }),
+        // context なし
+        messages: async () => ({ data: [] }),
+        create: async () => ({ data: { id: "gen-2" } }),
+        prompt: async (input) => {
+          promptTexts.push(input.text);
+          return {};
+        },
+      } as unknown as Parameters<typeof handleV2IdleEvent>[0]["session"];
+      await handleV2IdleEvent({ sessionID: "sess-v2-2", directory: tmpDir, sink, session });
+      expect(promptTexts.length).toBe(1);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+      restorePluginEnv(envSnapshot);
+    }
+  });
+
+  test("handleV2IdleEvent respects daily-limit via existsSync (V2 path same as V1)", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "v2-daily-"));
+    const envSnapshot = snapshotPluginEnv();
+    process.env[DAILY_LIMIT_ENV] = "true";
+    process.env[THROTTLE_ENV] = "0";
+    try {
+      const outputDir = join("artifacts", "daily");
+      mkdirSync(join(tmpDir, outputDir), { recursive: true });
+      const dateStr = todayDateString();
+      writeFileSync(join(tmpDir, outputDir, `${dateStr}_logbook.md`), "existing");
+      const sinkWarns: string[] = [];
+      const sink = { warn: async (m: string) => sinkWarns.push(m), error: async () => {} };
+      const session = {
+        get: async () => ({ data: { title: "t" } }),
+        context: async () => ({ data: [] }),
+        create: async () => ({ data: { id: "gen-3" } }),
+        prompt: async () => ({ data: {} }),
+      };
+      let createCalled = false;
+      const trackingSession = {
+        ...session,
+        create: async (input: { title: string }) => {
+          createCalled = true;
+          return { data: { id: "gen-3" } };
+        },
+      };
+      await handleV2IdleEvent({ sessionID: "sess-v2-3", directory: tmpDir, sink, session: trackingSession });
+      expect(createCalled).toBe(false);
+      expect(sinkWarns.some((m) => m.includes("already exists"))).toBe(true);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+      restorePluginEnv(envSnapshot);
+    }
+  });
+});

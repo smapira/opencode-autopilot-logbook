@@ -45,6 +45,40 @@ npm uninstall -g opencode-autopilot-logbook
 rm -rf ~/.cache/opencode/packages/opencode-autopilot-logbook*
 ```
 
+## 互換性
+
+### V1（stable）
+
+- `opencode` 1.18.x（`anomalyco/opencode` via Homebrew）+ `@opencode-ai/plugin ^1.0.0`
+- 現行 stable ブランチ。設定変更不要。`opencode.json` は `plugin` またはキーなし（`.opencode` は symlink）
+
+### V2 beta（デュアル対応, `feature/v2-migration`）
+
+本プラグインは **デュアル対応** です。既存の `DailyLogbookPlugin`（`Plugin = async ({ client, directory }) => ({ event })`）を温存し、V2 用に `Plugin.define({ id: "smapira.daily-logbook", setup(ctx) })` を追加。stable 1.18.x では V1 経路、beta では V2 経路（`handleV2IdleEvent` / `v2Setup`）が動作します。
+
+**V2 を試す**
+
+```bash
+# beta ブランチのみ
+npm i -D @opencode-ai/plugin@beta
+npx opencode@beta --version   # beta channel（opencode2 という別バイナリは存在しません）
+opencode --standalone         # beta で起動
+# session.idle → artifacts/daily/YYYYMMDD_logbook.md が生成されることを確認
+```
+
+**設定** — V2 は `opencode.json` で `plugins` のオブジェクト形式を推奨:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [{ "package": "opencode-autopilot-logbook" }]
+}
+```
+
+beta 期間中は V1 の `plugin` キーも受け付ける可能性があります（E2E 未確定）。詳細は `CHANGELOG.md ## 2.0.0 Migration` と `daily-logbook.ts` の対照表（`event.data.sessionID` vs `properties`、`ctx.session.get({sessionID})` vs `path:{id}`、`ctx.app.log` → `console`）を参照。
+
+beta 期間中は V2 API が再 breaking する可能性があります。`main` の `package.json` は `^1.0.0` のまま維持し、beta ブランチでのみ `beta` に切り替えます。
+
 ---
 
 ## 環境変数

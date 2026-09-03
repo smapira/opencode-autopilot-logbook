@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { Database } from "bun:sqlite";
@@ -75,6 +76,63 @@ export function maskSecrets(value: string): string {
 }
 
 type Logger = PluginInput["client"];
+
+// ---------------------------------------------------------------------------
+// Logger abstraction (TASK-4)
+// V1: Logger = PluginInput["client"] で client.app.log が存在する。
+// V2: ctx.app は { name, version, channel } のみで log メソッドを持たない。
+//     代替として console.warn / console.error を用いる。
+//     既存の Logger 型を直接使わず、AppLogSink に抽象化して V1/V2 両対応する。
+// ---------------------------------------------------------------------------
+type AppLogSink = {
+  warn: (message: string) => Promise<void> | void;
+  error: (message: string, error?: unknown) => Promise<void> | void;
+  info?: (message: string) => Promise<void> | void;
+};
+
+function createV1LogSink(client: Logger): AppLogSink {
+  return {
+    warn: async (message) => {
+      try {
+        await client.app.log({ body: { service: SERVICE_NAME, level: "warn", message } });
+      } catch {
+        // Do not let logging failures break the main flow; no-op here.
+      }
+    },
+    error: async (message, error) => {
+      const errorMessage = error instanceof Error ? error.message : String(error ?? "");
+      const fullMessage = errorMessage ? `${message}: ${errorMessage}` : message;
+      try {
+        await client.app.log({ body: { service: SERVICE_NAME, level: "error", message: fullMessage } });
+      } catch {
+        // Do not let logging failures break the main flow; no-op here.
+      }
+    },
+    info: async (message) => {
+      try {
+        await client.app.log({ body: { service: SERVICE_NAME, level: "info", message } });
+      } catch {
+        // ignore
+      }
+    },
+  };
+}
+
+function createV2LogSink(): AppLogSink {
+  return {
+    warn: (message) => {
+      console.warn(`[${SERVICE_NAME}] ${message}`);
+    },
+    error: (message, error) => {
+      const errorMessage = error instanceof Error ? error.message : error !== undefined ? String(error) : "";
+      const fullMessage = errorMessage ? `${message}: ${errorMessage}` : message;
+      console.error(`[${SERVICE_NAME}] ${fullMessage}`);
+    },
+    info: (message) => {
+      console.log(`[${SERVICE_NAME}] ${message}`);
+    },
+  };
+}
 
 function isPluginDisabled(): boolean {
   return process.env.OPENCODE_DAILY_LOGBOOK_DISABLED === "true";
@@ -655,4 +713,331 @@ export const DailyLogbookPlugin: Plugin = async ({ client, directory }) => {
   };
 };
 
-export default DailyLogbookPlugin;
+// ---------------------------------------------------------------------------
+// V2 Plugin (TASK-1〜4)
+// V1は `export const DailyLogbookPlugin: Plugin = async ({client,directory})=>({event})`
+// でイベントを `event.properties.sessionID` / `client.session.*` / `client.app.log` で扱う。
+// V2は `Plugin.define({ id, setup(ctx) })` で `ctx.event.subscribe` + `ctx.session.*` +
+// `ctx.location.directory` + consoleログへ全面的に置換される。詳細は下記対照表を参照。
+//
+// V1→V2 API対照（beta promise形状）:
+// | V1                                      | V2 beta (promise)                          |
+// |-----------------------------------------|--------------------------------------------|
+// | client.session.get({ path:{id} })       | ctx.session.get({ sessionID })             |
+// | client.session.messages({ path:{id} })  | ctx.session.context({ sessionID })         |
+// | client.session.create({ body:{title} }) | ctx.session.create({ title })              |
+// | client.session.promptAsync({ path:{id}, body:{parts:[{type,text}]} }) | ctx.session.prompt({ sessionID, text }) / ctx.session.generate |
+// | event.properties.sessionID              | event.data.sessionID                       |
+// | client.app.log                          | なし（ctx.appは {name,version,channel} のみ。要代替: console.warn/error） |
+// | directory                               | ctx.location.directory                     |
+//
+// イベント購読の差異 (TASK-2):
+// - promise版: ctx.event.subscribe({ signal }) => AsyncIterable<V2Event> で全イベントが流れ、
+//   ループ内で `if (event.type==="session.idle")` フィルタする。
+// - effect版: ctx.event.subscribe("session.idle") => Stream で型引数でフィルタする。
+//   本実装は promise版（beta）に準拠し、effect差異をコメントで明記する。
+// セッション操作はフラット形状 (TASK-3): ctx.session.* は path/body ネストなし。
+// ログは ctx.app.log が存在しないため console 代替 (TASK-4)。
+// ---------------------------------------------------------------------------
+
+/**
+ * V2 idle handling extracted to a testable function.
+ * Uses flat V2 session shapes and AppLogSink.
+ */
+export async function handleV2IdleEvent(params: {
+  sessionID: string;
+  directory: string;
+  sink: AppLogSink;
+  session: {
+    get: (input: { sessionID: string }) => Promise<unknown>;
+    context?: (input: { sessionID: string }) => Promise<unknown>;
+    messages?: (input: { path: { id: string } }) => Promise<unknown>;
+    create: (input: { title: string }) => Promise<unknown>;
+    prompt?: (input: { sessionID: string; text: string }) => Promise<unknown>;
+    promptAsync?: (input: { path: { id: string }; body: { parts: Array<{ type: string; text: string }> } }) => Promise<unknown>;
+    generate?: (input: { sessionID: string; text: string }) => Promise<unknown>;
+  };
+}): Promise<void> {
+  const { sessionID: originalSessionId, directory, sink, session } = params;
+
+  if (isPluginDisabled()) {
+    return;
+  }
+
+  const nowMs = Date.now();
+  const throttleWindowMs = getThrottleWindowMs();
+  pruneExpiredGuards(nowMs, throttleWindowMs);
+
+  if (inFlightSessionIds.has(originalSessionId) || isDuplicateTrigger(originalSessionId, nowMs, throttleWindowMs)) {
+    return;
+  }
+
+  const now = new Date();
+  const { date } = formatDateTokens(now);
+  const outputDir = getOutputDir();
+  const isDailyLimited = isDailyLimitEnabled();
+
+  if (isDailyLimited && dailyLimitInFlightByDate.has(date)) {
+    await sink.warn(`Daily logbook for ${date} is already being generated. Skipping (OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT=true).`);
+    return;
+  }
+
+  inFlightSessionIds.add(originalSessionId);
+  if (isDailyLimited) {
+    dailyLimitInFlightByDate.add(date);
+  }
+
+  try {
+    // V1: client.session.get({ path:{id} }) -> V2: ctx.session.get({ sessionID })
+    let getResult: unknown;
+    try {
+      getResult = await session.get({ sessionID: originalSessionId });
+    } catch (error) {
+      getResult = { error };
+    }
+    const getTyped = getResult as { data?: { title?: string }; title?: string; error?: unknown };
+    if (getTyped?.error) {
+      await sink.error("Failed to fetch source session", getTyped.error);
+      return;
+    }
+    const currentSessionTitle = getTyped?.data?.title ?? getTyped?.title ?? "";
+    if (currentSessionTitle.startsWith(GENERATED_TITLE_PREFIX)) {
+      return;
+    }
+
+    if (isDailyLimited) {
+      const customTemplatePath = process.env.OPENCODE_DAILY_LOGBOOK_TEMPLATE;
+      if (customTemplatePath) {
+        await sink.warn(
+          "OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT is not supported together with OPENCODE_DAILY_LOGBOOK_TEMPLATE (file name pattern is unknown). Daily limit check is skipped.",
+        );
+      } else if (isDailyLogbookExists(directory, outputDir, date)) {
+        await sink.warn(`Daily logbook for ${date} already exists. Skipping generation (OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT=true).`);
+        return;
+      }
+    }
+
+    let usageTable: string | undefined;
+    try {
+      const stats = getUsageStats({
+        directory,
+        sessionId: originalSessionId,
+        date,
+        projectOnly: isUsageProjectOnly(),
+      });
+      if (stats) {
+        const projectDisplayName = basename(resolve(directory));
+        const displayDate = `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}`;
+        const table = formatUsageTable(stats, displayDate, projectDisplayName);
+        if (table) {
+          usageTable = table;
+        }
+      }
+    } catch (error) {
+      await sink.warn(`Failed to get usage stats: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    let template = SAMPLE_TEMPLATE;
+    try {
+      template = loadTemplate(directory);
+    } catch (error) {
+      const customTemplatePath = process.env.OPENCODE_DAILY_LOGBOOK_TEMPLATE;
+      await sink.warn(`Template load failed (${customTemplatePath ?? "unknown"}). Fallback to SAMPLE_TEMPLATE.`);
+      await sink.error("Template load error", error);
+    }
+
+    // V1: client.session.messages({ path:{id} }) -> V2: ctx.session.context({ sessionID })
+    let messagesResult: unknown;
+    try {
+      if (session.context) {
+        messagesResult = await session.context({ sessionID: originalSessionId });
+      } else if (session.messages) {
+        messagesResult = await session.messages({ path: { id: originalSessionId } });
+      } else {
+        messagesResult = { error: new Error("no messages method available") };
+      }
+    } catch (error) {
+      messagesResult = { error };
+    }
+    const messagesTyped = messagesResult as { data?: unknown[]; messages?: unknown[]; error?: unknown };
+    if (messagesTyped?.error) {
+      await sink.error("Failed to load source session messages", messagesTyped.error);
+      return;
+    }
+    const messagesData = (messagesTyped?.data ?? messagesTyped?.messages ?? messagesTyped ?? []) as Array<{
+      info: { role: "user" | "assistant" };
+      parts: Array<{ type: string; [key: string]: unknown }>;
+    }>;
+    const safeMessages = Array.isArray(messagesData) ? messagesData : [];
+
+    const includeTranscript = isTranscriptIncluded();
+    const transcript = includeTranscript ? buildTranscript(safeMessages) : "";
+
+    const promptOutputDir = isDailyLimited ? resolve(directory, outputDir) : outputDir;
+    const prompt = buildPrompt(template, originalSessionId, transcript, includeTranscript, promptOutputDir, now, usageTable);
+
+    // V1: client.session.create({ body:{title} }) -> V2: ctx.session.create({ title })
+    let createResult: unknown;
+    try {
+      createResult = await session.create({ title: `${GENERATED_TITLE_PREFIX} ${date}` });
+    } catch (error) {
+      createResult = { error };
+    }
+    const createTyped = createResult as { data?: { id: string }; id?: string; sessionID?: string; error?: unknown };
+    if (createTyped?.error) {
+      await sink.error("Failed to create daily logbook session", createTyped.error);
+      return;
+    }
+    const generatedSessionId = createTyped?.data?.id ?? createTyped?.id ?? createTyped?.sessionID;
+    if (!generatedSessionId) {
+      await sink.error("Failed to create daily logbook session", "missing session id");
+      return;
+    }
+
+    // V1: client.session.promptAsync({ path:{id}, body:{parts:[{type,text}]} }) -> V2: ctx.session.prompt({ sessionID, text })
+    let promptResult: unknown;
+    try {
+      if (session.prompt) {
+        promptResult = await session.prompt({ sessionID: generatedSessionId, text: prompt });
+      } else if (session.generate) {
+        promptResult = await session.generate({ sessionID: generatedSessionId, text: prompt });
+      } else if (session.promptAsync) {
+        promptResult = await session.promptAsync({
+          path: { id: generatedSessionId },
+          body: { parts: [{ type: "text", text: prompt }] },
+        });
+      } else {
+        promptResult = { error: new Error("no prompt method available on session") };
+      }
+    } catch (error) {
+      promptResult = { error };
+    }
+    const promptTyped = promptResult as { error?: unknown };
+    if (promptTyped?.error) {
+      await sink.error("Failed to send daily logbook prompt", promptTyped.error);
+      return;
+    }
+
+    recentlyTriggeredAtBySessionId.set(originalSessionId, nowMs);
+  } catch (error) {
+    await sink.error("Unhandled error while generating daily logbook", error);
+  } finally {
+    inFlightSessionIds.delete(originalSessionId);
+    if (isDailyLimited) {
+      dailyLimitInFlightByDate.delete(date);
+    }
+  }
+}
+
+async function v2Setup(ctx: unknown): Promise<(() => void) | void> {
+  const anyCtx = ctx as {
+    location?: { directory?: string };
+    directory?: string;
+    app?: { name?: string; version?: string; channel?: string };
+    event?: { subscribe?: (opts: { signal: AbortSignal }) => AsyncIterable<{ type: string; data?: unknown; properties?: unknown }> };
+    session?: {
+      get: (input: { sessionID: string }) => Promise<unknown>;
+      context?: (input: { sessionID: string }) => Promise<unknown>;
+      messages?: (input: { path: { id: string } }) => Promise<unknown>;
+      create: (input: { title: string }) => Promise<unknown>;
+      prompt?: (input: { sessionID: string; text: string }) => Promise<unknown>;
+      generate?: (input: { sessionID: string; text: string }) => Promise<unknown>;
+      promptAsync?: (input: unknown) => Promise<unknown>;
+    };
+  };
+
+  const directory = anyCtx.location?.directory ?? anyCtx.directory ?? process.cwd();
+  const sink = createV2LogSink();
+
+  await sink.info?.(`daily-logbook plugin loaded (v2) app=${anyCtx.app?.name ?? "unknown"} ${anyCtx.app?.version ?? ""}`);
+
+  const controller = new AbortController();
+
+  // V2 promise版は subscribe({signal}) => AsyncIterable<V2Event>
+  // effect版は subscribe(type): Stream で形状が異なることに注意。
+  void (async () => {
+    try {
+      const subscribe = anyCtx.event?.subscribe;
+      if (!subscribe) {
+        await sink.warn("event.subscribe not available; v2 plugin idle");
+        return;
+      }
+      // promise版は type引数なし、effect版は type引数あり。両対応のためまずは signal 付きで試す。
+      let iterable: AsyncIterable<{ type: string; data?: unknown; properties?: unknown }> | undefined;
+      try {
+        iterable = (subscribe as (opts: { signal: AbortSignal }) => AsyncIterable<unknown>)({ signal: controller.signal }) as never;
+      } catch {
+        // effect版では subscribe("session.idle") の形かもしれないが、本実装は promise版を優先
+        await sink.warn("event.subscribe({signal}) failed; v2 plugin idle");
+        return;
+      }
+      if (!iterable || typeof (iterable as AsyncIterable<unknown>)[Symbol.asyncIterator] !== "function") {
+        await sink.warn("event.subscribe did not return AsyncIterable; v2 plugin idle");
+        return;
+      }
+      for await (const event of iterable) {
+        // V1: event.properties.sessionID -> V2: event.data.sessionID
+        if (event.type !== "session.idle") {
+          continue;
+        }
+        const data = (event as { data?: { sessionID?: string }; properties?: { sessionID?: string } }).data;
+        const properties = (event as { data?: { sessionID?: string }; properties?: { sessionID?: string } }).properties;
+        const sessionID = data?.sessionID ?? properties?.sessionID;
+        if (!sessionID) {
+          await sink.warn("session.idle event missing sessionID; skipping");
+          continue;
+        }
+        if (!anyCtx.session) {
+          await sink.warn("ctx.session not available; skipping idle handling");
+          continue;
+        }
+        await handleV2IdleEvent({ sessionID, directory, sink, session: anyCtx.session });
+      }
+    } catch (error) {
+      const name = (error as { name?: string })?.name;
+      if (name === "AbortError") {
+        return;
+      }
+      await sink.error("v2 event loop error", error);
+    }
+  })();
+
+  // setupは Promise<Cleanup|void>, Cleanup = () => Promise<void>|void
+  return () => controller.abort();
+}
+
+function tryCreateV2Plugin(): unknown {
+  try {
+    const require = createRequire(import.meta.url);
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mod = require("@opencode-ai/plugin") as { Plugin?: { define?: (p: { id: string; setup: (ctx: unknown) => Promise<unknown> }) => unknown } };
+    const define = mod?.Plugin?.define;
+    if (typeof define === "function") {
+      return define({ id: "smapira.daily-logbook", setup: v2Setup });
+    }
+  } catch {
+    // ignore – stable 1.x でも bun test が壊れないようにフォールバック
+  }
+  // フォールバック: plain object（テストやV2未対応環境でも setup を検証可能）
+  return { id: "smapira.daily-logbook", setup: v2Setup };
+}
+
+export const DailyLogbookPluginV2: unknown = tryCreateV2Plugin();
+
+// デュアル対応: V1の DailyLogbookPlugin は温存し、V2は DailyLogbookPluginV2 として提供。
+// default export は V2 が利用可能な環境では V2 プラグイン、そうでなければ V1 プラグインを返す。
+// V2ホストは default の Plugin.define 結果を、V1ホストは DailyLogbookPlugin を参照する。
+const _defaultExport: unknown = (() => {
+  try {
+    const require = createRequire(import.meta.url);
+    const mod = require("@opencode-ai/plugin") as { Plugin?: { define?: unknown } };
+    if (mod?.Plugin?.define) {
+      return DailyLogbookPluginV2;
+    }
+  } catch {
+    // ignore
+  }
+  return DailyLogbookPlugin;
+})();
+
+export default _defaultExport as unknown as typeof DailyLogbookPlugin | typeof DailyLogbookPluginV2;

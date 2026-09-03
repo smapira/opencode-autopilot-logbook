@@ -3,7 +3,7 @@
 import { existsSync, readFileSync } from "fs";
 import { createRequire } from "module";
 import { homedir } from "os";
-import { basename, dirname, join, resolve } from "path";
+import { basename, join, resolve } from "path";
 import { Database } from "bun:sqlite";
 var SERVICE_NAME = "daily-logbook-plugin";
 var GENERATED_TITLE_PREFIX = "[daily-logbook:auto]";
@@ -53,6 +53,27 @@ function maskSecrets(value) {
   }
   return masked;
 }
+function createV1LogSink(client) {
+  return {
+    warn: async (message) => {
+      try {
+        await client.app.log({ body: { service: SERVICE_NAME, level: "warn", message } });
+      } catch {}
+    },
+    error: async (message, error) => {
+      const errorMessage = error instanceof Error ? error.message : String(error ?? "");
+      const fullMessage = errorMessage ? `${message}: ${errorMessage}` : message;
+      try {
+        await client.app.log({ body: { service: SERVICE_NAME, level: "error", message: fullMessage } });
+      } catch {}
+    },
+    info: async (message) => {
+      try {
+        await client.app.log({ body: { service: SERVICE_NAME, level: "info", message } });
+      } catch {}
+    }
+  };
+}
 function createV2LogSink() {
   return {
     warn: (message) => {
@@ -101,50 +122,65 @@ function getDbPath() {
   }
   return join(homedir(), ".local/share/opencode/opencode.db");
 }
-function getUsageStats(params) {
-  const dbPath = params.dbPath ?? getDbPath();
-  if (!existsSync(dbPath)) {
+function resolveProjectId(db, normalizedDir) {
+  try {
+    const stmt = db.prepare("SELECT id FROM project WHERE worktree = ?");
+    const row = stmt.get(normalizedDir);
+    if (row)
+      return row.id;
+    return null;
+  } catch {
     return null;
   }
+}
+function toYyyyMmDd(date) {
+  if (date.length === 8) {
+    return `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}`;
+  }
+  return date;
+}
+function queryDailyStats(db, projectId, dateStr, projectOnly) {
+  const useProject = projectId !== null && projectOnly;
+  if (useProject) {
+    const stmt2 = db.prepare(`SELECT count(*) as sessionsToday, coalesce(sum(cost),0) as dayCost, coalesce(sum(tokens_input),0) as tokensInput, coalesce(sum(tokens_output),0) as tokensOutput, coalesce(sum(tokens_cache_read),0) as cacheRead FROM session WHERE project_id = ? AND date(datetime(time_created/1000,'unixepoch','localtime')) = ?`);
+    return stmt2.get(projectId, dateStr);
+  }
+  const stmt = db.prepare(`SELECT count(*) as sessionsToday, coalesce(sum(cost),0) as dayCost, coalesce(sum(tokens_input),0) as tokensInput, coalesce(sum(tokens_output),0) as tokensOutput, coalesce(sum(tokens_cache_read),0) as cacheRead FROM session WHERE date(datetime(time_created/1000,'unixepoch','localtime')) = ?`);
+  return stmt.get(dateStr);
+}
+function queryTotalStats(db, projectId, projectOnly) {
+  const useProject = projectId !== null && projectOnly;
+  if (useProject) {
+    const stmt2 = db.prepare(`SELECT coalesce(sum(cost),0) as totalCost FROM session WHERE project_id = ?`);
+    return stmt2.get(projectId);
+  }
+  const stmt = db.prepare(`SELECT coalesce(sum(cost),0) as totalCost FROM session`);
+  return stmt.get();
+}
+function querySessionCost(db, sessionId) {
+  try {
+    const stmt = db.prepare(`SELECT cost FROM session WHERE id = ?`);
+    const row = stmt.get(sessionId);
+    if (row && row.cost !== null && row.cost !== undefined)
+      return Number(row.cost);
+    return null;
+  } catch {
+    return null;
+  }
+}
+function getUsageStats(params) {
+  const dbPath = params.dbPath ?? getDbPath();
+  if (!existsSync(dbPath))
+    return null;
   let db = null;
   try {
     db = new Database(dbPath, { readonly: true });
     const normalizedDir = resolve(params.directory);
-    let projectId = null;
-    try {
-      const projStmt = db.prepare("SELECT id FROM project WHERE worktree = ?");
-      const projRow = projStmt.get(normalizedDir);
-      if (projRow) {
-        projectId = projRow.id;
-      }
-    } catch {}
-    const yyyyMmDd = params.date.length === 8 ? `${params.date.slice(0, 4)}-${params.date.slice(4, 6)}-${params.date.slice(6, 8)}` : params.date;
-    let dailyRow;
-    if (projectId && params.projectOnly) {
-      const stmt = db.prepare(`SELECT count(*) as sessionsToday, coalesce(sum(cost),0) as dayCost, coalesce(sum(tokens_input),0) as tokensInput, coalesce(sum(tokens_output),0) as tokensOutput, coalesce(sum(tokens_cache_read),0) as cacheRead FROM session WHERE project_id = ? AND date(datetime(time_created/1000,'unixepoch','localtime')) = ?`);
-      dailyRow = stmt.get(projectId, yyyyMmDd);
-    } else {
-      const stmt = db.prepare(`SELECT count(*) as sessionsToday, coalesce(sum(cost),0) as dayCost, coalesce(sum(tokens_input),0) as tokensInput, coalesce(sum(tokens_output),0) as tokensOutput, coalesce(sum(tokens_cache_read),0) as cacheRead FROM session WHERE date(datetime(time_created/1000,'unixepoch','localtime')) = ?`);
-      dailyRow = stmt.get(yyyyMmDd);
-    }
-    let totalRow;
-    if (projectId && params.projectOnly) {
-      const stmt = db.prepare(`SELECT coalesce(sum(cost),0) as totalCost FROM session WHERE project_id = ?`);
-      totalRow = stmt.get(projectId);
-    } else {
-      const stmt = db.prepare(`SELECT coalesce(sum(cost),0) as totalCost FROM session`);
-      totalRow = stmt.get();
-    }
-    let sessionCost = null;
-    try {
-      const stmt = db.prepare(`SELECT cost FROM session WHERE id = ?`);
-      const row = stmt.get(params.sessionId);
-      if (row && row.cost !== null && row.cost !== undefined) {
-        sessionCost = Number(row.cost);
-      }
-    } catch {
-      sessionCost = null;
-    }
+    const projectId = resolveProjectId(db, normalizedDir);
+    const dateStr = toYyyyMmDd(params.date);
+    const dailyRow = queryDailyStats(db, projectId, dateStr, params.projectOnly);
+    const totalRow = queryTotalStats(db, projectId, params.projectOnly);
+    const sessionCost = querySessionCost(db, params.sessionId);
     return {
       dayCost: Number(dailyRow?.dayCost ?? 0),
       tokensInput: Number(dailyRow?.tokensInput ?? 0),
@@ -166,21 +202,17 @@ function formatCost(value) {
   return `$${value.toFixed(2)}`;
 }
 function formatTokens(value) {
-  if (value >= 1e9) {
+  if (value >= 1e9)
     return `${(value / 1e9).toFixed(1)}B`;
-  }
-  if (value >= 1e6) {
+  if (value >= 1e6)
     return `${(value / 1e6).toFixed(1)}M`;
-  }
-  if (value >= 1000) {
+  if (value >= 1000)
     return `${(value / 1000).toFixed(1)}K`;
-  }
   return `${value}`;
 }
 function formatUsageTable(stats, date, projectDisplayName) {
-  if (!stats) {
+  if (!stats)
     return "";
-  }
   const displayDate = date.length === 8 ? `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}` : date;
   const heading = projectDisplayName ? `## Usage \u2014 ${displayDate} (project: ${projectDisplayName})` : `## Usage \u2014 ${displayDate}`;
   const hasSessionCost = stats.sessionCost !== null && stats.sessionCost !== undefined;
@@ -210,34 +242,20 @@ function replaceTemplateVariables(template, sessionId, now, outputDir, usageTabl
 }
 function loadTemplate(directory) {
   const customTemplatePath = process.env.OPENCODE_DAILY_LOGBOOK_TEMPLATE;
-  if (!customTemplatePath) {
+  if (!customTemplatePath)
     return SAMPLE_TEMPLATE;
-  }
   const resolvedTemplatePath = resolve(directory, customTemplatePath);
   return readFileSync(resolvedTemplatePath, "utf-8");
 }
-async function logWarn(client, message) {
-  try {
-    await client.app.log({
-      body: {
-        service: SERVICE_NAME,
-        level: "warn",
-        message
-      }
-    });
-  } catch {}
-}
 function truncateText(value, maxChars) {
-  if (value.length <= maxChars) {
+  if (value.length <= maxChars)
     return value;
-  }
   return `${value.slice(0, maxChars)}
 ...(truncated)`;
 }
 function extractReadableText(part) {
-  if (part.type === "text" && typeof part.text === "string") {
+  if (part.type === "text" && typeof part.text === "string")
     return part.text;
-  }
   return "";
 }
 function buildTranscript(messages) {
@@ -246,17 +264,15 @@ function buildTranscript(messages) {
     const roleLabel = info.role === "user" ? "User" : "Assistant";
     const text = parts.map((part) => extractReadableText(part)).join(`
 `).trim();
-    if (!text) {
+    if (!text)
       return "";
-    }
     return `[${roleLabel}]
 ${text}`;
   }).filter((line) => line.length > 0).join(`
 
 `);
-  if (!transcriptLines) {
+  if (!transcriptLines)
     return "(No summarizable text history found in the source session)";
-  }
   const maskedTranscript = isRedactEnabled() ? maskSecrets(transcriptLines) : transcriptLines;
   return truncateText(maskedTranscript, TRANSCRIPT_MAX_CHARS);
 }
@@ -275,22 +291,9 @@ ${transcript}`;
   }
   return basePrompt;
 }
-async function logError(client, message, error) {
-  const errorMessage = error instanceof Error ? error.message : String(error);
-  try {
-    await client.app.log({
-      body: {
-        service: SERVICE_NAME,
-        level: "error",
-        message: `${message}: ${errorMessage}`
-      }
-    });
-  } catch {}
-}
 function isWithinWindow(lastTriggeredAt, nowMs, windowMs) {
-  if (lastTriggeredAt === undefined) {
+  if (lastTriggeredAt === undefined)
     return false;
-  }
   return nowMs - lastTriggeredAt < windowMs;
 }
 function isDuplicateTrigger(sessionId, nowMs, windowMs) {
@@ -307,6 +310,201 @@ function isDailyLogbookExists(directory, outputDir, date) {
   const dailyLogbookPath = resolve(directory, outputDir, `${date}_logbook.md`);
   return existsSync(dailyLogbookPath);
 }
+function resolveUsageTable(directory, sessionId, date) {
+  const stats = getUsageStats({ directory, sessionId, date, projectOnly: isUsageProjectOnly() });
+  if (!stats)
+    return;
+  const projectDisplayName = basename(resolve(directory));
+  const displayDate = `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}`;
+  const table = formatUsageTable(stats, displayDate, projectDisplayName);
+  return table || undefined;
+}
+function resolveTemplate(directory) {
+  return loadTemplate(directory);
+}
+function parseSourceResult(result) {
+  const typed = result;
+  if (typed?.error)
+    return { ok: false, error: typed.error };
+  const title = typed?.data?.title ?? typed?.title ?? "";
+  if (title.startsWith(GENERATED_TITLE_PREFIX))
+    return { ok: false, isGenerated: true };
+  return { ok: true };
+}
+function parseMessagesResult(result) {
+  const typed = result;
+  if (typed?.error)
+    return { error: typed.error, data: [] };
+  const data = typed?.data ?? typed?.messages ?? typed ?? [];
+  const safe = Array.isArray(data) ? data : [];
+  return { data: safe };
+}
+function parseCreateResult(result) {
+  const typed = result;
+  if (typed?.error)
+    return { error: typed.error };
+  const id = typed?.data?.id ?? typed?.id ?? typed?.sessionID;
+  if (!id)
+    return { error: "missing session id" };
+  return { id };
+}
+function isThrottled(sessionId, nowMs, windowMs) {
+  return inFlightSessionIds.has(sessionId) || isDuplicateTrigger(sessionId, nowMs, windowMs);
+}
+function isDailyLimitedInFlight(date, isDailyLimited) {
+  return isDailyLimited && dailyLimitInFlightByDate.has(date);
+}
+function getDailyFileAction(isDailyLimited, directory, outputDir, date) {
+  if (!isDailyLimited)
+    return "continue";
+  if (process.env.OPENCODE_DAILY_LOGBOOK_TEMPLATE)
+    return "warnCustom";
+  if (isDailyLogbookExists(directory, outputDir, date))
+    return "skip";
+  return "continue";
+}
+function buildTranscriptFromData(data) {
+  return isTranscriptIncluded() ? buildTranscript(data) : "";
+}
+function handleDailyFileAction(action, sink, date) {
+  if (action === "warnCustom") {
+    sink.warn("OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT is not supported together with OPENCODE_DAILY_LOGBOOK_TEMPLATE (file name pattern is unknown). Daily limit check is skipped.");
+    return false;
+  }
+  if (action === "skip") {
+    sink.warn(`Daily logbook for ${date} already exists. Skipping generation (OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT=true).`);
+    return true;
+  }
+  return false;
+}
+function getUsageAndTemplate(directory, sessionId, date, sink) {
+  let usageTable;
+  try {
+    usageTable = resolveUsageTable(directory, sessionId, date);
+  } catch (error) {
+    sink.warn(`Failed to get usage stats: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  let template;
+  try {
+    template = resolveTemplate(directory);
+  } catch (error) {
+    const customTemplatePath = process.env.OPENCODE_DAILY_LOGBOOK_TEMPLATE;
+    sink.warn(`Template load failed (${customTemplatePath ?? "unknown"}). Fallback to SAMPLE_TEMPLATE.`);
+    sink.error("Template load error", error);
+    template = SAMPLE_TEMPLATE;
+  }
+  return { usageTable, template };
+}
+function shouldAbortSource(parsed, sink) {
+  if (parsed.error) {
+    sink.error("Failed to fetch source session", parsed.error);
+    return true;
+  }
+  if (parsed.isGenerated)
+    return true;
+  return false;
+}
+function shouldAbortMessages(parsed, sink) {
+  if (parsed.error) {
+    sink.error("Failed to load source session messages", parsed.error);
+    return true;
+  }
+  return false;
+}
+function shouldAbortCreate(parsed, sink) {
+  if (parsed.error) {
+    sink.error("Failed to create daily logbook session", parsed.error);
+    return true;
+  }
+  return false;
+}
+function shouldAbortPrompt(result, sink) {
+  if (result.error) {
+    sink.error("Failed to send daily logbook prompt", result.error);
+    return true;
+  }
+  return false;
+}
+async function generateDailyLogbookCore(params) {
+  if (isPluginDisabled())
+    return;
+  const nowMs = Date.now();
+  const throttleWindowMs = getThrottleWindowMs();
+  pruneExpiredGuards(nowMs, throttleWindowMs);
+  if (isThrottled(params.sessionId, nowMs, throttleWindowMs))
+    return;
+  const now = new Date;
+  const { date } = formatDateTokens(now);
+  const outputDir = getOutputDir();
+  const isDailyLimited = isDailyLimitEnabled();
+  if (isDailyLimitedInFlight(date, isDailyLimited)) {
+    await params.sink.warn(`Daily logbook for ${date} is already being generated. Skipping (OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT=true).`);
+    return;
+  }
+  inFlightSessionIds.add(params.sessionId);
+  if (isDailyLimited)
+    dailyLimitInFlightByDate.add(date);
+  try {
+    {
+      let getResult;
+      try {
+        getResult = await params.adapter.get(params.sessionId);
+      } catch (error) {
+        getResult = { error };
+      }
+      const parsed = parseSourceResult(getResult);
+      if (shouldAbortSource(parsed, params.sink))
+        return;
+    }
+    {
+      const action = getDailyFileAction(isDailyLimited, params.directory, outputDir, date);
+      if (handleDailyFileAction(action, params.sink, date))
+        return;
+    }
+    const { usageTable, template } = getUsageAndTemplate(params.directory, params.sessionId, date, params.sink);
+    let msgResult;
+    try {
+      msgResult = await params.adapter.getMessages(params.sessionId);
+    } catch (error) {
+      msgResult = { error };
+    }
+    const parsedMsg = parseMessagesResult(msgResult);
+    if (shouldAbortMessages(parsedMsg, params.sink))
+      return;
+    const transcript = buildTranscriptFromData(parsedMsg.data);
+    const includeTranscript = isTranscriptIncluded();
+    const promptOutputDir = isDailyLimited ? resolve(params.directory, outputDir) : outputDir;
+    const prompt = buildPrompt(template, params.sessionId, transcript, includeTranscript, promptOutputDir, now, usageTable);
+    let createResult;
+    try {
+      createResult = await params.adapter.create(`${GENERATED_TITLE_PREFIX} ${date}`);
+    } catch (error) {
+      createResult = { error };
+    }
+    const parsedCreate = parseCreateResult(createResult);
+    if (shouldAbortCreate(parsedCreate, params.sink))
+      return;
+    const generatedId = parsedCreate.id;
+    {
+      let promptResult;
+      try {
+        promptResult = await params.adapter.prompt(generatedId, prompt);
+      } catch (error) {
+        promptResult = { error };
+      }
+      const typed = promptResult;
+      if (shouldAbortPrompt(typed, params.sink))
+        return;
+    }
+    recentlyTriggeredAtBySessionId.set(params.sessionId, nowMs);
+  } catch (error) {
+    await params.sink.error("Unhandled error while generating daily logbook", error);
+  } finally {
+    inFlightSessionIds.delete(params.sessionId);
+    if (isDailyLimited)
+      dailyLimitInFlightByDate.delete(date);
+  }
+}
 var DailyLogbookPlugin = async ({ client, directory }) => {
   await client.app.log({
     body: {
@@ -317,272 +515,41 @@ var DailyLogbookPlugin = async ({ client, directory }) => {
   });
   return {
     event: async ({ event }) => {
-      if (event.type !== "session.idle") {
+      if (event.type !== "session.idle")
         return;
-      }
-      if (isPluginDisabled()) {
-        return;
-      }
-      const originalSessionId = event.properties.sessionID;
-      const nowMs = Date.now();
-      const throttleWindowMs = getThrottleWindowMs();
-      pruneExpiredGuards(nowMs, throttleWindowMs);
-      if (inFlightSessionIds.has(originalSessionId) || isDuplicateTrigger(originalSessionId, nowMs, throttleWindowMs)) {
-        return;
-      }
-      const now = new Date;
-      const { date } = formatDateTokens(now);
-      const outputDir = getOutputDir();
-      const isDailyLimited = isDailyLimitEnabled();
-      if (isDailyLimited && dailyLimitInFlightByDate.has(date)) {
-        await logWarn(client, `Daily logbook for ${date} is already being generated. Skipping (OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT=true).`);
-        return;
-      }
-      inFlightSessionIds.add(originalSessionId);
-      if (isDailyLimited) {
-        dailyLimitInFlightByDate.add(date);
-      }
-      try {
-        const currentSessionResult = await client.session.get({
-          path: { id: originalSessionId }
-        });
-        if (currentSessionResult.error) {
-          await logError(client, "Failed to fetch source session", currentSessionResult.error);
-          return;
-        }
-        const currentSessionTitle = currentSessionResult.data.title ?? "";
-        if (currentSessionTitle.startsWith(GENERATED_TITLE_PREFIX)) {
-          return;
-        }
-        if (isDailyLimited) {
-          const customTemplatePath = process.env.OPENCODE_DAILY_LOGBOOK_TEMPLATE;
-          if (customTemplatePath) {
-            await logWarn(client, "OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT is not supported together with OPENCODE_DAILY_LOGBOOK_TEMPLATE (file name pattern is unknown). Daily limit check is skipped.");
-          } else if (isDailyLogbookExists(directory, outputDir, date)) {
-            await logWarn(client, `Daily logbook for ${date} already exists. Skipping generation (OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT=true).`);
-            return;
-          }
-        }
-        let usageTable;
-        try {
-          const stats = getUsageStats({
-            directory,
-            sessionId: originalSessionId,
-            date,
-            projectOnly: isUsageProjectOnly()
-          });
-          if (stats) {
-            const projectDisplayName = basename(resolve(directory));
-            const displayDate = `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}`;
-            const table = formatUsageTable(stats, displayDate, projectDisplayName);
-            if (table) {
-              usageTable = table;
-            }
-          }
-        } catch (error) {
-          await logWarn(client, `Failed to get usage stats: ${error instanceof Error ? error.message : String(error)}`);
-        }
-        let template = SAMPLE_TEMPLATE;
-        try {
-          template = loadTemplate(directory);
-        } catch (error) {
-          const customTemplatePath = process.env.OPENCODE_DAILY_LOGBOOK_TEMPLATE;
-          await logWarn(client, `Template load failed (${customTemplatePath ?? "unknown"}). Fallback to SAMPLE_TEMPLATE.`);
-          await logError(client, "Template load error", error);
-        }
-        const messagesResult = await client.session.messages({
-          path: { id: originalSessionId }
-        });
-        if (messagesResult.error) {
-          await logError(client, "Failed to load source session messages", messagesResult.error);
-          return;
-        }
-        const includeTranscript = isTranscriptIncluded();
-        const transcript = includeTranscript ? buildTranscript(messagesResult.data) : "";
-        const promptOutputDir = isDailyLimited ? resolve(directory, outputDir) : outputDir;
-        const prompt = buildPrompt(template, originalSessionId, transcript, includeTranscript, promptOutputDir, now, usageTable);
-        const generatedSessionResult = await client.session.create({
-          body: {
-            title: `${GENERATED_TITLE_PREFIX} ${date}`
-          }
-        });
-        if (generatedSessionResult.error) {
-          await logError(client, "Failed to create daily logbook session", generatedSessionResult.error);
-          return;
-        }
-        const generatedSessionId = generatedSessionResult.data.id;
-        const promptResult = await client.session.promptAsync({
-          path: { id: generatedSessionId },
-          body: {
-            parts: [
-              {
-                type: "text",
-                text: prompt
-              }
-            ]
-          }
-        });
-        if (promptResult.error) {
-          await logError(client, "Failed to send daily logbook prompt", promptResult.error);
-          return;
-        }
-        recentlyTriggeredAtBySessionId.set(originalSessionId, nowMs);
-      } catch (error) {
-        await logError(client, "Unhandled error while generating daily logbook", error);
-      } finally {
-        inFlightSessionIds.delete(originalSessionId);
-        if (isDailyLimited) {
-          dailyLimitInFlightByDate.delete(date);
-        }
-      }
+      const sink = createV1LogSink(client);
+      const adapter = {
+        get: (id) => client.session.get({ path: { id } }),
+        getMessages: (id) => client.session.messages({ path: { id } }),
+        create: (title) => client.session.create({ body: { title } }),
+        prompt: (id, text) => client.session.promptAsync({ path: { id }, body: { parts: [{ type: "text", text }] } })
+      };
+      await generateDailyLogbookCore({ sessionId: event.properties.sessionID, directory, sink, adapter });
     }
   };
 };
 async function handleV2IdleEvent(params) {
-  const { sessionID: originalSessionId, directory, sink, session } = params;
-  if (isPluginDisabled()) {
-    return;
-  }
-  const nowMs = Date.now();
-  const throttleWindowMs = getThrottleWindowMs();
-  pruneExpiredGuards(nowMs, throttleWindowMs);
-  if (inFlightSessionIds.has(originalSessionId) || isDuplicateTrigger(originalSessionId, nowMs, throttleWindowMs)) {
-    return;
-  }
-  const now = new Date;
-  const { date } = formatDateTokens(now);
-  const outputDir = getOutputDir();
-  const isDailyLimited = isDailyLimitEnabled();
-  if (isDailyLimited && dailyLimitInFlightByDate.has(date)) {
-    await sink.warn(`Daily logbook for ${date} is already being generated. Skipping (OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT=true).`);
-    return;
-  }
-  inFlightSessionIds.add(originalSessionId);
-  if (isDailyLimited) {
-    dailyLimitInFlightByDate.add(date);
-  }
-  try {
-    let getResult;
-    try {
-      getResult = await session.get({ sessionID: originalSessionId });
-    } catch (error) {
-      getResult = { error };
+  const adapter = {
+    get: (id) => params.session.get({ sessionID: id }),
+    getMessages: async (id) => {
+      if (params.session.context)
+        return params.session.context({ sessionID: id });
+      if (params.session.messages)
+        return params.session.messages({ path: { id } });
+      return { error: new Error("no messages method available") };
+    },
+    create: (title) => params.session.create({ title }),
+    prompt: async (id, text) => {
+      if (params.session.prompt)
+        return params.session.prompt({ sessionID: id, text });
+      if (params.session.generate)
+        return params.session.generate({ sessionID: id, text });
+      if (params.session.promptAsync)
+        return params.session.promptAsync({ path: { id }, body: { parts: [{ type: "text", text }] } });
+      return { error: new Error("no prompt method available on session") };
     }
-    const getTyped = getResult;
-    if (getTyped?.error) {
-      await sink.error("Failed to fetch source session", getTyped.error);
-      return;
-    }
-    const currentSessionTitle = getTyped?.data?.title ?? getTyped?.title ?? "";
-    if (currentSessionTitle.startsWith(GENERATED_TITLE_PREFIX)) {
-      return;
-    }
-    if (isDailyLimited) {
-      const customTemplatePath = process.env.OPENCODE_DAILY_LOGBOOK_TEMPLATE;
-      if (customTemplatePath) {
-        await sink.warn("OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT is not supported together with OPENCODE_DAILY_LOGBOOK_TEMPLATE (file name pattern is unknown). Daily limit check is skipped.");
-      } else if (isDailyLogbookExists(directory, outputDir, date)) {
-        await sink.warn(`Daily logbook for ${date} already exists. Skipping generation (OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT=true).`);
-        return;
-      }
-    }
-    let usageTable;
-    try {
-      const stats = getUsageStats({
-        directory,
-        sessionId: originalSessionId,
-        date,
-        projectOnly: isUsageProjectOnly()
-      });
-      if (stats) {
-        const projectDisplayName = basename(resolve(directory));
-        const displayDate = `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}`;
-        const table = formatUsageTable(stats, displayDate, projectDisplayName);
-        if (table) {
-          usageTable = table;
-        }
-      }
-    } catch (error) {
-      await sink.warn(`Failed to get usage stats: ${error instanceof Error ? error.message : String(error)}`);
-    }
-    let template = SAMPLE_TEMPLATE;
-    try {
-      template = loadTemplate(directory);
-    } catch (error) {
-      const customTemplatePath = process.env.OPENCODE_DAILY_LOGBOOK_TEMPLATE;
-      await sink.warn(`Template load failed (${customTemplatePath ?? "unknown"}). Fallback to SAMPLE_TEMPLATE.`);
-      await sink.error("Template load error", error);
-    }
-    let messagesResult;
-    try {
-      if (session.context) {
-        messagesResult = await session.context({ sessionID: originalSessionId });
-      } else if (session.messages) {
-        messagesResult = await session.messages({ path: { id: originalSessionId } });
-      } else {
-        messagesResult = { error: new Error("no messages method available") };
-      }
-    } catch (error) {
-      messagesResult = { error };
-    }
-    const messagesTyped = messagesResult;
-    if (messagesTyped?.error) {
-      await sink.error("Failed to load source session messages", messagesTyped.error);
-      return;
-    }
-    const messagesData = messagesTyped?.data ?? messagesTyped?.messages ?? messagesTyped ?? [];
-    const safeMessages = Array.isArray(messagesData) ? messagesData : [];
-    const includeTranscript = isTranscriptIncluded();
-    const transcript = includeTranscript ? buildTranscript(safeMessages) : "";
-    const promptOutputDir = isDailyLimited ? resolve(directory, outputDir) : outputDir;
-    const prompt = buildPrompt(template, originalSessionId, transcript, includeTranscript, promptOutputDir, now, usageTable);
-    let createResult;
-    try {
-      createResult = await session.create({ title: `${GENERATED_TITLE_PREFIX} ${date}` });
-    } catch (error) {
-      createResult = { error };
-    }
-    const createTyped = createResult;
-    if (createTyped?.error) {
-      await sink.error("Failed to create daily logbook session", createTyped.error);
-      return;
-    }
-    const generatedSessionId = createTyped?.data?.id ?? createTyped?.id ?? createTyped?.sessionID;
-    if (!generatedSessionId) {
-      await sink.error("Failed to create daily logbook session", "missing session id");
-      return;
-    }
-    let promptResult;
-    try {
-      if (session.prompt) {
-        promptResult = await session.prompt({ sessionID: generatedSessionId, text: prompt });
-      } else if (session.generate) {
-        promptResult = await session.generate({ sessionID: generatedSessionId, text: prompt });
-      } else if (session.promptAsync) {
-        promptResult = await session.promptAsync({
-          path: { id: generatedSessionId },
-          body: { parts: [{ type: "text", text: prompt }] }
-        });
-      } else {
-        promptResult = { error: new Error("no prompt method available on session") };
-      }
-    } catch (error) {
-      promptResult = { error };
-    }
-    const promptTyped = promptResult;
-    if (promptTyped?.error) {
-      await sink.error("Failed to send daily logbook prompt", promptTyped.error);
-      return;
-    }
-    recentlyTriggeredAtBySessionId.set(originalSessionId, nowMs);
-  } catch (error) {
-    await sink.error("Unhandled error while generating daily logbook", error);
-  } finally {
-    inFlightSessionIds.delete(originalSessionId);
-    if (isDailyLimited) {
-      dailyLimitInFlightByDate.delete(date);
-    }
-  }
+  };
+  await generateDailyLogbookCore({ sessionId: params.sessionID, directory: params.directory, sink: params.sink, adapter });
 }
 async function v2Setup(ctx) {
   const anyCtx = ctx;
@@ -610,9 +577,8 @@ async function v2Setup(ctx) {
         return;
       }
       for await (const event of iterable) {
-        if (event.type !== "session.idle") {
+        if (event.type !== "session.idle")
           continue;
-        }
         const data = event.data;
         const properties = event.properties;
         const sessionID = data?.sessionID ?? properties?.sessionID;
@@ -628,9 +594,8 @@ async function v2Setup(ctx) {
       }
     } catch (error) {
       const name = error?.name;
-      if (name === "AbortError") {
+      if (name === "AbortError")
         return;
-      }
       await sink.error("v2 event loop error", error);
     }
   })();
@@ -666,6 +631,7 @@ export {
   getUsageStats,
   getThrottleWindowMs,
   getDbPath,
+  generateDailyLogbookCore,
   formatUsageTable,
   formatTokens,
   formatCost,

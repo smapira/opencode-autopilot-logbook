@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.0.3 - refactor: complexity 20 and dev env alignment (2026-09-03)
+
+### Changed
+- **eslint 準拠リファクタ**: `eslint.config.mjs` を `globals` + `complexity:20` に更新したことに伴い、`daily-logbook.ts` の複雑度違反 3件 (`getUsageStats 29`, `event 27`, `handleV2IdleEvent 56`) を解消。`getUsageStats` を `resolveProjectId`/`queryDailyStats` 等に抽出、`event`/`handleV2IdleEvent` の重複 170行を `generateDailyLogbookCore` + `SessionAdapter` に集約し、各関数を 20 以下に。コメントの簡素化と `dirname`/`fileURLToPath`/`isBetaPluginAvailable` の未使用整理も実施。`npx eslint .` 0, `npx tsc --noEmit` 0 を達成
+  - `package.json` に `globals@^17.12.0` を追加（`eslint.config.mjs` の `globals.node` 用）
+  - `dist/index.js` は 23.43 KB に再ビルド（`bun test` 85 pass 維持）
+
 ## 2.0.2 - fix: hybrid default for V1/V2 host compatibility (2026-09-03)
 
 ### Fixed

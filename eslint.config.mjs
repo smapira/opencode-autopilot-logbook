@@ -1,27 +1,32 @@
 import eslint from "@eslint/js";
 import tseslint from "typescript-eslint";
+import globals from "globals";
 
 export default tseslint.config(
   {
     ignores: ["dist/**", "node_modules/**", "coverage/**"],
   },
+
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
+
   {
     languageOptions: {
       globals: {
-        console: "readonly",
-        process: "readonly",
-        AbortController: "readonly",
-        AbortSignal: "readonly",
-        Buffer: "readonly",
-        setTimeout: "readonly",
-        clearTimeout: "readonly",
+        ...globals.node,
       },
     },
+
     rules: {
-      complexity: ["error", 60],
-      "no-empty": ["error", { allowEmptyCatch: true }],
+      complexity: ["error", 20],
+
+      "no-empty": [
+        "error",
+        {
+          allowEmptyCatch: true,
+        },
+      ],
+
       "@typescript-eslint/no-unused-vars": [
         "error",
         {

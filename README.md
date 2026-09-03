@@ -109,26 +109,121 @@ npm list -g opencode-autopilot-logbook
 
 ## Uninstall
 
-#### v1
+`npm uninstall -g` alone leaves config and cache. Clean all 4 places — global config, local project config, npm global, and cache. The section below also includes a **self-detection checklist** so you can re-verify at any time without re-reading the source.
+
+#### v1 — `opencode` 1.18.x (reads `~/.config/opencode/opencode.json`, key `plugin`)
 
 `opencode` 1.18.x has no `plugin remove` subcommand. Remove the entry manually:
 
 ```bash
-# 1. Edit ~/.config/opencode/opencode.json and delete "opencode-autopilot-logbook" from the `plugin` array
-#    (also delete "list" if it exists — it is a leftover from running `opencode plugin list`)
-#    Example clean state: "plugin": []
-#    Or remove the key entirely if no other plugins
+# 1. Remove from global config (and also delete "list" if it exists
+#    — it is a leftover from running `opencode plugin list` which v1 treats as an npm package)
+#    Do it by hand, or run the one-liner below that also cleans opencode.jsonc and the v2 `plugins` key
+#    Example clean state: "plugin": []  or remove the key entirely if no other plugins
 npm uninstall -g opencode-autopilot-logbook
 rm -rf ~/.cache/opencode/packages/opencode-autopilot-logbook* ~/.cache/opencode/packages/list*
+
+# 2. If this repository still shows the plugin locally, clean it too
+#    (leftover ".opencode/opencode.json" with "list" was observed after `opencode plugin list`)
+cat .opencode/opencode.json 2>/dev/null | python3 -m json.tool | grep -A5 plugin || echo "no local .opencode/opencode.json"
+# if it contains "list" or "opencode-autopilot-logbook", edit .opencode/opencode.json and remove them
 ```
 
-#### v2
+One-liner that cleans both global files (`opencode.json` + `opencode.jsonc`) and both keys (`plugin` + `plugins`):
 
 ```bash
-opencode2 plugin remove opencode-autopilot-logbook
-npm uninstall -g opencode-autopilot-logbook
-rm -rf ~/.cache/opencode/packages/opencode-autopilot-logbook*
+python3 -c "
+import json, pathlib
+for p in [pathlib.Path.home()/'.config/opencode/opencode.json', pathlib.Path.home()/'.config/opencode/opencode.jsonc']:
+    if p.exists():
+        j=json.loads(p.read_text())
+        for k in ('plugin','plugins'):
+            if k in j:
+                v=j[k]
+                if k=='plugin':
+                    j[k]=[x for x in v if x not in ('opencode-autopilot-logbook','list')]
+                else:
+                    j[k]=[x for x in v if x.get('package') not in ('opencode-autopilot-logbook','list')]
+                if not j[k]: j.pop(k,None)
+        p.write_text(json.dumps(j, indent=2)+'\n')
+        print(f'cleaned {p}:', j.get('plugin', j.get('plugins','(removed)')))
+"
+# then verify — see "Verify — Detect Any Remnants" below for the full checklist
 ```
+
+#### v2 — `opencode2` 0.0.0-beta-xxxxx (reads `~/.config/opencode/opencode.jsonc`, key `plugins`)
+
+```bash
+# 1. Preferred — via CLI (removes from opencode.jsonc `plugins`)
+opencode2 plugin remove opencode-autopilot-logbook
+opencode2 plugin list  # should show "No plugins found" or no autopilot entry
+
+# 2. Fallback if CLI misses legacy `plugin` key — same one-liner as v1 (cleans both keys in both files)
+python3 -c "
+import json, pathlib
+for p in [pathlib.Path.home()/'.config/opencode/opencode.json', pathlib.Path.home()/'.config/opencode/opencode.jsonc']:
+    if p.exists():
+        j=json.loads(p.read_text())
+        for k in ('plugin','plugins'):
+            if k in j:
+                v=j[k]
+                if k=='plugin':
+                    j[k]=[x for x in v if x not in ('opencode-autopilot-logbook','list')]
+                else:
+                    j[k]=[x for x in v if x.get('package') not in ('opencode-autopilot-logbook','list')]
+                if not j[k]: j.pop(k,None)
+        p.write_text(json.dumps(j, indent=2)+'\n')
+        print(f'cleaned {p}:', j.get('plugin', j.get('plugins','(removed)')))
+"
+
+# 3. npm global + cache
+npm uninstall -g opencode-autopilot-logbook
+rm -rf ~/.cache/opencode/packages/opencode-autopilot-logbook* ~/.cache/opencode/packages/list*
+
+# 4. Local project leftover (same as v1)
+cat .opencode/opencode.json 2>/dev/null | python3 -m json.tool | grep -A5 plugin || echo "no local .opencode/opencode.json"
+```
+
+#### Verify — Detect Any Remnants (Self-Check)
+
+Run this after uninstall to confirm nothing is left. All checks should print `clean` / `empty` / `no ...` if removal succeeded. Keep this block as your re-detection script — no source read needed.
+
+```bash
+echo "=== 1/7 npm global ==="; npm list -g opencode-autopilot-logbook 2>&1 | head -n 5; echo "(empty = clean)"
+echo "=== 2/7 global config: opencode.json (v1, key: plugin) ==="; cat ~/.config/opencode/opencode.json 2>/dev/null | python3 -m json.tool | grep -A5 '"plugin"\|"plugins"' || echo "no plugin/plugins key — clean"
+echo "=== 3/7 global config: opencode.jsonc (v2, keys: plugin + plugins) ==="; cat ~/.config/opencode/opencode.jsonc 2>/dev/null | python3 -m json.tool | grep -A5 '"plugin"\|"plugins"' || echo "no plugin/plugins key — clean"
+echo "=== 4/7 v2 CLI ==="; opencode2 plugin list 2>&1 | head -n 20; echo '(expect: "No plugins found" or no autopilot entry)'
+echo "=== 5/7 cache ==="; ls -1 ~/.cache/opencode/packages/ 2>&1 | grep -E "autopilot|list" || echo "cache clean"
+echo "=== 6/7 local project configs (run from repo root) ==="; cat .opencode/opencode.json 2>/dev/null | python3 -m json.tool | grep -A5 '"plugin"\|"plugins"' || echo "no local .opencode/opencode.json — clean"; ls ~/.config/opencode/*.bak 2>/dev/null | head -n 5 || echo "no .bak files"
+echo "=== 7/7 optional remnants ==="; env | grep -E "OPENCODE_DAILY" || echo "no OPENCODE_DAILY env — clean"; ls -lh artifacts/daily/ 2>/dev/null | head -n 20 || echo "no artifacts/daily"
+```
+
+Full one-liner for copy-paste (same checks, compact):
+
+```bash
+echo "--- npm global ---" && npm list -g opencode-autopilot-logbook 2>&1 | head -n 5; echo "--- opencode.json ---" && cat ~/.config/opencode/opencode.json 2>/dev/null | python3 -m json.tool | grep -E "plugin|plugins" || echo "clean"; echo "--- opencode.jsonc ---" && cat ~/.config/opencode/opencode.jsonc 2>/dev/null | python3 -m json.tool | grep -E "plugin|plugins" || echo "clean"; echo "--- opencode2 plugin list ---" && opencode2 plugin list 2>&1 | head -n 5; echo "--- cache ---" && ls ~/.cache/opencode/packages/ 2>&1 | grep -E "autopilot|list" || echo "cache clean"; echo "--- local .opencode/opencode.json ---" && cat .opencode/opencode.json 2>/dev/null | python3 -m json.tool | grep -E "plugin|plugins" || echo "clean"; echo "--- env ---" && env | grep OPENCODE_DAILY || echo "no env"
+```
+
+Expected clean output:
+
+```
+--- npm global ---
+... (empty)
+--- opencode.json ---
+clean  (or plugin list without autopilot/list)
+--- opencode.jsonc ---
+clean  (or plugin list without autopilot/list)
+--- opencode2 plugin list ---
+No plugins found
+--- cache ---
+cache clean
+--- local .opencode/opencode.json ---
+clean
+--- env ---
+no env
+```
+
+If any line still shows `opencode-autopilot-logbook` or `list`, re-run the one-liner in the v1/v2 section above, then re-run this Verify block.
 
 ## Compatibility
 

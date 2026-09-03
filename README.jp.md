@@ -107,19 +107,27 @@ npm list -g opencode-autopilot-logbook
 
 ## アンインストール
 
-#### v1
+`npm uninstall -g` だけでは設定ファイルとキャッシュが残ります。4箇所（グローバル設定・プロジェクトローカル設定・npm global・キャッシュ）をすべて掃除してください。本節はアンインストール後に**ユーザーが自分で再検出（セルフチェック）できる完全版**です。ソースを読み返さずに下の「検証 — 残留の再検出」ブロックだけで再確認できます。
+
+#### v1 — `opencode` 1.18.x（`~/.config/opencode/opencode.json` の `plugin` キーを読む）
 
 `opencode` 1.18.x には `plugin remove` サブコマンドがありません。手動で設定ファイルを編集します:
 
 ```bash
-# 1. ~/.config/opencode/opencode.json を開き、`plugin` 配列から "opencode-autopilot-logbook" を削除
-#    "list" があればそれも削除（`opencode plugin list` の誤実行の残骸です）
+# 1. グローバル設定から削除（"list" があれば一緒に削除
+#    — `opencode plugin list` を実行すると v1 は npm パッケージ `list` として誤登録します）
+#    手編集するか、下のワンライナー（opencode.json + opencode.jsonc、plugin/plugins 両キーを掃除）を実行
 #    例: "plugin": [] またはキー自体を削除
 npm uninstall -g opencode-autopilot-logbook
 rm -rf ~/.cache/opencode/packages/opencode-autopilot-logbook* ~/.cache/opencode/packages/list*
+
+# 2. リポジトリ直下のローカル設定に残留がないか確認
+#    （`opencode plugin list` 実行後に .opencode/opencode.json に "list" が残る事例を確認）
+cat .opencode/opencode.json 2>/dev/null | python3 -m json.tool | grep -A5 plugin || echo "no local .opencode/opencode.json"
+# "list" や "opencode-autopilot-logbook" があれば .opencode/opencode.json を手編集して削除
 ```
 
-JSON を一括で綺麗にするワンライナー:
+両グローバルファイル・両キーを一括で綺麗にするワンライナー:
 
 ```bash
 python3 -c "
@@ -127,20 +135,93 @@ import json, pathlib
 for p in [pathlib.Path.home()/'.config/opencode/opencode.json', pathlib.Path.home()/'.config/opencode/opencode.jsonc']:
     if p.exists():
         j=json.loads(p.read_text())
-        j['plugin']= [x for x in j.get('plugin',[]) if x not in ('opencode-autopilot-logbook','list')]
-        if not j['plugin']: j.pop('plugin',None)
+        for k in ('plugin','plugins'):
+            if k in j:
+                v=j[k]
+                if k=='plugin':
+                    j[k]=[x for x in v if x not in ('opencode-autopilot-logbook','list')]
+                else:
+                    j[k]=[x for x in v if x.get('package') not in ('opencode-autopilot-logbook','list')]
+                if not j[k]: j.pop(k,None)
         p.write_text(json.dumps(j, indent=2)+'\n')
-        print(f'cleaned {p}:', j.get('plugin','(removed)'))
+        print(f'cleaned {p}:', j.get('plugin', j.get('plugins','(removed)')))
 "
+# 検証は下の「検証 — 残留の再検出」ブロックで一括実行
 ```
 
-#### v2
+#### v2 — `opencode2` 0.0.0-beta-xxxxx（`~/.config/opencode/opencode.jsonc` の `plugins` キーを読む）
 
 ```bash
+# 1. 推奨 — CLI で削除（opencode.jsonc の `plugins` から除去）
 opencode2 plugin remove opencode-autopilot-logbook
+opencode2 plugin list  # "No plugins found" または autopilot が無いことを確認
+
+# 2. 取り残しがあった場合のフォールバック — v1 と同じワンライナー（両キーを両ファイルから掃除）
+python3 -c "
+import json, pathlib
+for p in [pathlib.Path.home()/'.config/opencode/opencode.json', pathlib.Path.home()/'.config/opencode/opencode.jsonc']:
+    if p.exists():
+        j=json.loads(p.read_text())
+        for k in ('plugin','plugins'):
+            if k in j:
+                v=j[k]
+                if k=='plugin':
+                    j[k]=[x for x in v if x not in ('opencode-autopilot-logbook','list')]
+                else:
+                    j[k]=[x for x in v if x.get('package') not in ('opencode-autopilot-logbook','list')]
+                if not j[k]: j.pop(k,None)
+        p.write_text(json.dumps(j, indent=2)+'\n')
+        print(f'cleaned {p}:', j.get('plugin', j.get('plugins','(removed)')))
+"
+
+# 3. npm global + キャッシュ
 npm uninstall -g opencode-autopilot-logbook
-rm -rf ~/.cache/opencode/packages/opencode-autopilot-logbook*
+rm -rf ~/.cache/opencode/packages/opencode-autopilot-logbook* ~/.cache/opencode/packages/list*
+
+# 4. ローカル残留（v1 と同じ）
+cat .opencode/opencode.json 2>/dev/null | python3 -m json.tool | grep -A5 plugin || echo "no local .opencode/opencode.json"
 ```
+
+#### 検証 — 残留の再検出（セルフチェック）
+
+アンインストール後に以下を実行してください。すべて `clean` / `empty` / `no ...` と表示されれば完全削除です。このブロックだけで再検出できるようにしています。ソースの再読は不要です。
+
+```bash
+echo "=== 1/7 npm global ==="; npm list -g opencode-autopilot-logbook 2>&1 | head -n 5; echo "(empty = clean)"
+echo "=== 2/7 グローバル設定: opencode.json（v1, キー: plugin）==="; cat ~/.config/opencode/opencode.json 2>/dev/null | python3 -m json.tool | grep -A5 '"plugin"\|"plugins"' || echo "no plugin/plugins key — clean"
+echo "=== 3/7 グローバル設定: opencode.jsonc（v2, キー: plugin + plugins）==="; cat ~/.config/opencode/opencode.jsonc 2>/dev/null | python3 -m json.tool | grep -A5 '"plugin"\|"plugins"' || echo "no plugin/plugins key — clean"
+echo "=== 4/7 v2 CLI ==="; opencode2 plugin list 2>&1 | head -n 20; echo '（期待値: "No plugins found" または autopilot が無いこと）'
+echo "=== 5/7 キャッシュ ==="; ls -1 ~/.cache/opencode/packages/ 2>&1 | grep -E "autopilot|list" || echo "cache clean"
+echo "=== 6/7 ローカル残留（リポジトリ直下で実行）==="; cat .opencode/opencode.json 2>/dev/null | python3 -m json.tool | grep -A5 '"plugin"\|"plugins"' || echo "no local .opencode/opencode.json — clean"; ls ~/.config/opencode/*.bak 2>/dev/null | head -n 5 || echo "no .bak files"
+echo "=== 7/7 その他の残留 ==="; env | grep -E "OPENCODE_DAILY" || echo "no OPENCODE_DAILY env — clean"; ls -lh artifacts/daily/ 2>/dev/null | head -n 20 || echo "no artifacts/daily"
+```
+
+コピペ用ワンライナー（同じ検査を1行で）:
+
+```bash
+echo "--- npm global ---" && npm list -g opencode-autopilot-logbook 2>&1 | head -n 5; echo "--- opencode.json ---" && cat ~/.config/opencode/opencode.json 2>/dev/null | python3 -m json.tool | grep -E "plugin|plugins" || echo "clean"; echo "--- opencode.jsonc ---" && cat ~/.config/opencode/opencode.jsonc 2>/dev/null | python3 -m json.tool | grep -E "plugin|plugins" || echo "clean"; echo "--- opencode2 plugin list ---" && opencode2 plugin list 2>&1 | head -n 5; echo "--- cache ---" && ls ~/.cache/opencode/packages/ 2>&1 | grep -E "autopilot|list" || echo "cache clean"; echo "--- local .opencode/opencode.json ---" && cat .opencode/opencode.json 2>/dev/null | python3 -m json.tool | grep -E "plugin|plugins" || echo "clean"; echo "--- env ---" && env | grep OPENCODE_DAILY || echo "no env"
+```
+
+期待されるクリーンな出力:
+
+```
+--- npm global ---
+... (empty)
+--- opencode.json ---
+clean  （または autopilot/list を含まない plugin 一覧）
+--- opencode.jsonc ---
+clean  （または autopilot/list を含まない plugin 一覧）
+--- opencode2 plugin list ---
+No plugins found
+--- cache ---
+cache clean
+--- local .opencode/opencode.json ---
+clean
+--- env ---
+no env
+```
+
+いずれかの行で `opencode-autopilot-logbook` や `list` が再表示されたら、上の v1/v2 のワンライナーを再実行し、この検証ブロックを再実行してください。
 
 ## 互換性
 

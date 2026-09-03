@@ -18,71 +18,45 @@ An OpenCode plugin that automatically generates daily reports when a session bec
 
 ## Install
 
+First check which OpenCode you have:
+
 ```bash
-npm install -g opencode-autopilot-logbook
+opencode --version   # → 1.18.x = v1 (stable, Homebrew)
+opencode2 --version  # → 0.0.0-beta-xxxxx = v2 (beta)
+```
+
+Use the matching command set. Mixing them (e.g. installing with `opencode` and checking with `opencode2 plugin list`) will show `No plugins found` because they read different config files.
+
+### OpenCode v1 — stable (Homebrew, `opencode` 1.18.x)
+
+Use `opencode-autopilot-logbook@2.0.3` (latest v1-compatible).
+
+```bash
+npm install -g opencode-autopilot-logbook@2.0.3
 opencode plugin opencode-autopilot-logbook -g
 ```
 
-> If you get "No plugin targets found", clear the OpenCode cache first:
+> `opencode plugin list` does **not** exist in v1. `opencode plugin <name>` treats the argument as an npm package to install — running `opencode plugin list` installs an unrelated package named `list` and pollutes `~/.config/opencode/opencode.json`. To inspect plugins, use:
 > ```bash
-> rm -rf ~/.cache/opencode/packages/opencode-autopilot-logbook*
+> cat ~/.config/opencode/opencode.json | python3 -m json.tool | grep -A5 plugin
 > ```
 
-### Restart OpenCode
+> If you get "No plugin targets found", clear the cache and retry:
+> ```bash
+> rm -rf ~/.cache/opencode/packages/opencode-autopilot-logbook*
+> opencode plugin opencode-autopilot-logbook -g
+> ```
 
-Quit and relaunch OpenCode.
+### OpenCode v2 — beta (`opencode2` 0.0.0-beta-xxxxx)
 
-### Verify
-
-- Start a session, do some work, then let it idle
-- A daily report will be generated automatically
-
-### Update
-
-```bash
-npm update -g opencode-autopilot-logbook
-# Or
-npm install -g opencode-autopilot-logbook@latest
-
-# OpenCode Plugin side
-rm -rf ~/.cache/opencode/packages/opencode-autopilot-logbook*
-opencode plugin opencode-autopilot-logbook -g
-
-# Evaluate
-npm list -g opencode-autopilot-logbook
-npm view opencode-autopilot-logbook version
-```
-
-## Uninstall
+Use `opencode-autopilot-logbook@2.0.5` (v2-only).
 
 ```bash
-opencode plugin opencode-autopilot-logbook -g --remove
-npm uninstall -g opencode-autopilot-logbook
-rm -rf ~/.cache/opencode/packages/opencode-autopilot-logbook*
+npm install -g opencode-autopilot-logbook@2.0.5
+opencode2 plugin add opencode-autopilot-logbook
 ```
 
-## Compatibility
-
-### V1 (stable)
-
-- `opencode` 1.18.x (`anomalyco/opencode` via Homebrew) + `@opencode-ai/plugin ^1.0.0`
-- Current stable branch. No changes needed. `opencode.json` uses `plugin` or no `plugin` key (`.opencode` symlink).
-
-### V2 beta (dual support, `feature/v2-migration`)
-
-This plugin is now **dual-compatible**: the existing `DailyLogbookPlugin` (`Plugin = async ({ client, directory }) => ({ event })`) is kept, and `Plugin.define({ id: "smapira.daily-logbook", setup(ctx) })` for V2 is added. On stable 1.18.x the V1 path runs; on beta the V2 path runs via `handleV2IdleEvent` / `v2Setup`.
-
-**To test V2**
-
-```bash
-# on beta branch only
-npm i -D @opencode-ai/plugin@beta
-npx opencode@beta --version   # beta channel (opencode2 alias does not exist)
-opencode --standalone         # beta
-# then trigger session.idle → artifacts/daily/YYYYMMDD_logbook.md is generated
-```
-
-**Config** — V2 prefers `plugins` with object form in `opencode.json`:
+v2 reads `~/.config/opencode/opencode.jsonc` and prefers the `plugins` key:
 
 ```jsonc
 {
@@ -91,9 +65,81 @@ opencode --standalone         # beta
 }
 ```
 
-Beta may still accept the V1 `plugin` key — E2E pending, see `CHANGELOG.md ## 2.0.0 Migration` and `daily-logbook.ts` API table (`event.data.sessionID` vs `properties`, `ctx.session.get({sessionID})` vs `path:{id}`, `ctx.app.log` → `console`).
+> Do not use `opencode plugin ... -g` when you are on `opencode2` — it writes to `opencode.json` (v1) which `opencode2` does not read.
 
-During beta the V2 API may still break. `package.json` stays on `^1.0.0` on `main`; switch to `beta` on the beta branch.
+### Restart & Verify
+
+Quit and relaunch OpenCode, then:
+
+- Start a session, do some work, then let it idle
+- A daily report will be generated at `artifacts/daily/YYYYMMDD_logbook.md`
+
+Verify:
+
+```bash
+# v1
+cat ~/.config/opencode/opencode.json | python3 -m json.tool
+# v2
+opencode2 plugin list
+cat ~/.config/opencode/opencode.jsonc | python3 -m json.tool | grep -A5 plugins
+```
+
+### Update
+
+#### v1
+
+```bash
+npm install -g opencode-autopilot-logbook@2.0.3
+rm -rf ~/.cache/opencode/packages/opencode-autopilot-logbook*
+opencode plugin opencode-autopilot-logbook -g --force
+
+npm list -g opencode-autopilot-logbook
+```
+
+#### v2
+
+```bash
+npm install -g opencode-autopilot-logbook@2.0.5
+rm -rf ~/.cache/opencode/packages/opencode-autopilot-logbook*
+opencode2 plugin remove opencode-autopilot-logbook 2>/dev/null; opencode2 plugin add opencode-autopilot-logbook
+
+opencode2 plugin list
+npm list -g opencode-autopilot-logbook
+```
+
+## Uninstall
+
+#### v1
+
+`opencode` 1.18.x has no `plugin remove` subcommand. Remove the entry manually:
+
+```bash
+# 1. Edit ~/.config/opencode/opencode.json and delete "opencode-autopilot-logbook" from the `plugin` array
+#    (also delete "list" if it exists — it is a leftover from running `opencode plugin list`)
+#    Example clean state: "plugin": []
+#    Or remove the key entirely if no other plugins
+npm uninstall -g opencode-autopilot-logbook
+rm -rf ~/.cache/opencode/packages/opencode-autopilot-logbook* ~/.cache/opencode/packages/list*
+```
+
+#### v2
+
+```bash
+opencode2 plugin remove opencode-autopilot-logbook
+npm uninstall -g opencode-autopilot-logbook
+rm -rf ~/.cache/opencode/packages/opencode-autopilot-logbook*
+```
+
+## Compatibility
+
+| Channel | Binary | Config file | Plugin key | Package |
+|---------|--------|-------------|------------|---------|
+| **v1 stable** | `opencode` 1.18.x (Homebrew `anomalyco/opencode`) | `~/.config/opencode/opencode.json` | `plugin: ["..."]` | `opencode-autopilot-logbook@2.0.3` |
+| **v2 beta** | `opencode2` 0.0.0-beta-xxxxx (`@opencode-ai/cli@beta`) | `~/.config/opencode/opencode.jsonc` | `plugins: [{package:"..."}]` | `opencode-autopilot-logbook@2.0.5` |
+
+* `2.0.3` is the last version that works on **both** hosts (hybrid default). `2.0.5` is **v2-only** — its `export default` is an object (`{id, setup, effect}`) so v1 host (`default` called as function) throws `TypeError`. See `CHANGELOG.md ## 2.0.5`.
+* During beta the V2 API may still break. `package.json` on `main` stays on `@opencode-ai/plugin ^1.0.0`; switch to `@beta` on the beta branch.
+* API differences: `event.properties.sessionID` → `event.data.sessionID`, `client.session.get({path:{id}})` → `ctx.session.get({sessionID})`, `ctx.app.log` → `console`. See `CHANGELOG.md ## 2.0.0` and `daily-logbook.ts` header table.
 
 ## Environment Variables
 

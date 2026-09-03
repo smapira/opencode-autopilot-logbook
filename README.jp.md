@@ -18,55 +18,45 @@ OpenCode セッション終了時に、日報を自動生成するプラグイ�
 
 ## インストール
 
+まず利用中の OpenCode を確認してください:
+
 ```bash
-npm install -g opencode-autopilot-logbook
+opencode --version   # → 1.18.x なら v1 (stable, Homebrew)
+opencode2 --version  # → 0.0.0-beta-xxxxx なら v2 (beta)
+```
+
+バージョンに合った手順を使ってください。混在させると（例: `opencode` でインストールして `opencode2 plugin list` で確認）参照する設定ファイルが違うため `No plugins found` になります。
+
+### OpenCode v1 — stable（Homebrew, `opencode` 1.18.x）
+
+`opencode-autopilot-logbook@2.0.3`（v1 対応の最終版）を使います。
+
+```bash
+npm install -g opencode-autopilot-logbook@2.0.3
 opencode plugin opencode-autopilot-logbook -g
 ```
 
-> 「No plugin targets found」と表示される場合は、OpenCode のキャッシュをクリアしてください:
+> `opencode plugin list` というコマンドは v1 には存在しません。`opencode plugin <名前>` は引数を npm パッケージ名としてインストールします。`opencode plugin list` を実行すると無関係な `list` パッケージが入り `~/.config/opencode/opencode.json` が汚染されます。確認は以下を使ってください:
 > ```bash
-> rm -rf ~/.cache/opencode/packages/opencode-autopilot-logbook*
+> cat ~/.config/opencode/opencode.json | python3 -m json.tool | grep -A5 plugin
 > ```
 
-### OpenCode を再起動
+> 「No plugin targets found」と表示される場合はキャッシュをクリアして再試行:
+> ```bash
+> rm -rf ~/.cache/opencode/packages/opencode-autopilot-logbook*
+> opencode plugin opencode-autopilot-logbook -g
+> ```
 
-OpenCode を終了し、再び起動してください。
+### OpenCode v2 — beta（`opencode2` 0.0.0-beta-xxxxx）
 
-### 動作確認
-
-- セッションを開始し、作業後にアイドル状態にする
-- 日報が自動生成される
-
-## アンインストール
-
-```bash
-opencode plugin opencode-autopilot-logbook -g --remove
-npm uninstall -g opencode-autopilot-logbook
-rm -rf ~/.cache/opencode/packages/opencode-autopilot-logbook*
-```
-
-## 互換性
-
-### V1（stable）
-
-- `opencode` 1.18.x（`anomalyco/opencode` via Homebrew）+ `@opencode-ai/plugin ^1.0.0`
-- 現行 stable ブランチ。設定変更不要。`opencode.json` は `plugin` またはキーなし（`.opencode` は symlink）
-
-### V2 beta（デュアル対応, `feature/v2-migration`）
-
-本プラグインは **デュアル対応** です。既存の `DailyLogbookPlugin`（`Plugin = async ({ client, directory }) => ({ event })`）を温存し、V2 用に `Plugin.define({ id: "smapira.daily-logbook", setup(ctx) })` を追加。stable 1.18.x では V1 経路、beta では V2 経路（`handleV2IdleEvent` / `v2Setup`）が動作します。
-
-**V2 を試す**
+`opencode-autopilot-logbook@2.0.5`（v2 専用）を使います。
 
 ```bash
-# beta ブランチのみ
-npm i -D @opencode-ai/plugin@beta
-npx opencode@beta --version   # beta channel（opencode2 という別バイナリは存在しません）
-opencode --standalone         # beta で起動
-# session.idle → artifacts/daily/YYYYMMDD_logbook.md が生成されることを確認
+npm install -g opencode-autopilot-logbook@2.0.5
+opencode2 plugin add opencode-autopilot-logbook
 ```
 
-**設定** — V2 は `opencode.json` で `plugins` のオブジェクト形式を推奨:
+v2 は `~/.config/opencode/opencode.jsonc` を読み、`plugins` キーを推奨します:
 
 ```jsonc
 {
@@ -75,9 +65,93 @@ opencode --standalone         # beta で起動
 }
 ```
 
-beta 期間中は V1 の `plugin` キーも受け付ける可能性があります（E2E 未確定）。詳細は `CHANGELOG.md ## 2.0.0 Migration` と `daily-logbook.ts` の対照表（`event.data.sessionID` vs `properties`、`ctx.session.get({sessionID})` vs `path:{id}`、`ctx.app.log` → `console`）を参照。
+> `opencode2` 環境で `opencode plugin ... -g` を使わないでください。v1 用の `opencode.json` に書き込まれ、`opencode2` からは読まれません。
 
-beta 期間中は V2 API が再 breaking する可能性があります。`main` の `package.json` は `^1.0.0` のまま維持し、beta ブランチでのみ `beta` に切り替えます。
+### 再起動と動作確認
+
+OpenCode を終了して再起動し、以下を確認:
+
+- セッションを開始し、作業後にアイドル状態にする
+- `artifacts/daily/YYYYMMDD_logbook.md` が自動生成される
+
+確認コマンド:
+
+```bash
+# v1
+cat ~/.config/opencode/opencode.json | python3 -m json.tool
+# v2
+opencode2 plugin list
+cat ~/.config/opencode/opencode.jsonc | python3 -m json.tool | grep -A5 plugins
+```
+
+### アップデート
+
+#### v1
+
+```bash
+npm install -g opencode-autopilot-logbook@2.0.3
+rm -rf ~/.cache/opencode/packages/opencode-autopilot-logbook*
+opencode plugin opencode-autopilot-logbook -g --force
+npm list -g opencode-autopilot-logbook
+```
+
+#### v2
+
+```bash
+npm install -g opencode-autopilot-logbook@2.0.5
+rm -rf ~/.cache/opencode/packages/opencode-autopilot-logbook*
+opencode2 plugin remove opencode-autopilot-logbook 2>/dev/null; opencode2 plugin add opencode-autopilot-logbook
+opencode2 plugin list
+npm list -g opencode-autopilot-logbook
+```
+
+## アンインストール
+
+#### v1
+
+`opencode` 1.18.x には `plugin remove` サブコマンドがありません。手動で設定ファイルを編集します:
+
+```bash
+# 1. ~/.config/opencode/opencode.json を開き、`plugin` 配列から "opencode-autopilot-logbook" を削除
+#    "list" があればそれも削除（`opencode plugin list` の誤実行の残骸です）
+#    例: "plugin": [] またはキー自体を削除
+npm uninstall -g opencode-autopilot-logbook
+rm -rf ~/.cache/opencode/packages/opencode-autopilot-logbook* ~/.cache/opencode/packages/list*
+```
+
+JSON を一括で綺麗にするワンライナー:
+
+```bash
+python3 -c "
+import json, pathlib
+for p in [pathlib.Path.home()/'.config/opencode/opencode.json', pathlib.Path.home()/'.config/opencode/opencode.jsonc']:
+    if p.exists():
+        j=json.loads(p.read_text())
+        j['plugin']= [x for x in j.get('plugin',[]) if x not in ('opencode-autopilot-logbook','list')]
+        if not j['plugin']: j.pop('plugin',None)
+        p.write_text(json.dumps(j, indent=2)+'\n')
+        print(f'cleaned {p}:', j.get('plugin','(removed)'))
+"
+```
+
+#### v2
+
+```bash
+opencode2 plugin remove opencode-autopilot-logbook
+npm uninstall -g opencode-autopilot-logbook
+rm -rf ~/.cache/opencode/packages/opencode-autopilot-logbook*
+```
+
+## 互換性
+
+| チャネル | バイナリ | 設定ファイル | プラグインキー | パッケージ |
+|---------|----------|--------------|----------------|-----------|
+| **v1 stable** | `opencode` 1.18.x (Homebrew `anomalyco/opencode`) | `~/.config/opencode/opencode.json` | `plugin: ["..."]` | `opencode-autopilot-logbook@2.0.3` |
+| **v2 beta** | `opencode2` 0.0.0-beta-xxxxx (`@opencode-ai/cli@beta`) | `~/.config/opencode/opencode.jsonc` | `plugins: [{package:"..."}]` | `opencode-autopilot-logbook@2.0.5` |
+
+* `2.0.3` が両ホストで動作する最後のバージョン（ハイブリッド default）です。`2.0.5` は **v2 専用** — `export default` がオブジェクト（`{id, setup, effect}`）のため v1 では `TypeError` になります。詳細は `CHANGELOG.md ## 2.0.5`。
+* beta 期間中は V2 API が再 breaking する可能性があります。`main` の `package.json` は `@opencode-ai/plugin ^1.0.0` のまま維持し、beta ブランチでのみ `@beta` に切り替えます。
+* API 差分: `event.properties.sessionID` → `event.data.sessionID`、`client.session.get({path:{id}})` → `ctx.session.get({sessionID})`、`ctx.app.log` → `console`。詳細は `CHANGELOG.md ## 2.0.0` と `daily-logbook.ts` 冒頭の対照表を参照。
 
 ---
 

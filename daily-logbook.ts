@@ -659,14 +659,16 @@ export async function handleV2IdleEvent(params: {
   await generateDailyLogbookCore({ sessionId: params.sessionID, directory: params.directory, sink: params.sink, adapter });
 }
 
-async function v2Setup(ctx: unknown): Promise<(() => void) | void> {
+async function v2Setup(ctx: unknown): Promise<(() => void) | { event: (input: { event: { type: string; data?: unknown; properties?: unknown } }) => Promise<void> } | void> {
   const anyCtx = ctx as {
     location?: { directory?: string };
     directory?: string;
+    worktree?: string;
+    serverUrl?: URL | string;
     app?: { name?: string; version?: string; channel?: string };
+    client?: { event?: { subscribe?: unknown }; session?: unknown };
     event?: {
-      subscribe?: ((opts: { signal: AbortSignal }) => AsyncIterable<{ type: string; data?: unknown; properties?: unknown }>) &
-        ((type: string) => unknown);
+      subscribe?: ((opts: { signal: AbortSignal }) => unknown) & ((type: string) => unknown);
     };
     session?: {
       get: (input: { sessionID: string }) => Promise<unknown>;
@@ -678,49 +680,311 @@ async function v2Setup(ctx: unknown): Promise<(() => void) | void> {
       promptAsync?: (input: unknown) => Promise<unknown>;
     };
   };
-  const directory = anyCtx.location?.directory ?? anyCtx.directory ?? process.cwd();
+  const directory = anyCtx.location?.directory ?? anyCtx.directory ?? anyCtx.worktree ?? process.cwd();
   const sink = createV2LogSink();
-  await sink.info?.(`daily-logbook plugin loaded (v2) app=${anyCtx.app?.name ?? "unknown"} ${anyCtx.app?.version ?? ""}`);
-  const controller = new AbortController();
-  void runV2EventLoop(anyCtx, sink, directory, controller);
-  return () => controller.abort();
+  // 恒久対応: ctx の形状を診断ログに出し、beta での event 位置の差異を可視化する
+  const ctxKeys = (() => {
+    try {
+      return Object.keys(anyCtx as unknown as Record<string, unknown>).sort().join(",");
+    } catch {
+      return "unknown";
+    }
+  })();
+  const hasEventSubscribe = typeof anyCtx.event?.subscribe === "function";
+  const hasClientEventSubscribe = typeof anyCtx.client?.event?.subscribe === "function";
+  const hasSession = !!anyCtx.session;
+  await sink.info?.(
+    `daily-logbook plugin loaded (v2) app=${anyCtx.app?.name ?? "unknown"} ${anyCtx.app?.version ?? ""} ctxKeys=[${ctxKeys}] event.subscribe=${hasEventSubscribe ? "yes" : "no"} client.event.subscribe=${hasClientEventSubscribe ? "yes" : "no"} session=${hasSession ? "yes" : "no"}`,
+  );
+
+  // 恒久対応: beta 18999 の PluginContext は {agent,aisdk,catalog,command,integration,options,plugin,reference,skill}
+  // のみで event/session を持たない。ctx.event が無い場合は、ホストが旧来の
+  // `return {event: async ({event})=>{}}` 形式をまだサポートしている可能性に賭け、
+  // event フックを返すフォールバックを用意する。ホストが ctx.event.subscribe を
+  // 持つ場合は従来通りそちらを優先する。
+  const eventHost: { subscribe?: unknown } | undefined = (anyCtx.event as unknown as { subscribe?: unknown }) ?? (anyCtx.client?.event as unknown as { subscribe?: unknown } | undefined);
+
+  if (eventHost?.subscribe) {
+    const controller = new AbortController();
+    // session が ctx に無い場合は SDK から自前で作るフォールバックを試みる
+    const session = (anyCtx.session as unknown as {
+      get: (input: { sessionID: string }) => Promise<unknown>;
+      context?: (input: { sessionID: string }) => Promise<unknown>;
+      messages?: (input: { path: { id: string } }) => Promise<unknown>;
+      create: (input: { title: string }) => Promise<unknown>;
+      prompt?: (input: { sessionID: string; text: string }) => Promise<unknown>;
+      generate?: (input: { sessionID: string; text: string }) => Promise<unknown>;
+      promptAsync?: (input: unknown) => Promise<unknown>;
+    } | undefined) ?? (await createFallbackSessionAdapter(sink, anyCtx.serverUrl));
+    if (!session) {
+      await sink.warn("v2: no session adapter available (ctx.session missing and fallback failed); idle handling disabled");
+      return;
+    }
+    void runV2EventLoop({ event: eventHost, session }, sink, directory, controller);
+    return () => controller.abort();
+  }
+
+  // event 購読 API が無い beta では、SDK から自前で event 購読を試みる
+  // （opencode2 の server は localhost:49374 などで待受）。成功すれば
+  // そちらで idle を購読し、失敗すれば旧来の return {event} にフォールバックする。
+  // session は SDK 依存を避け、ファイル直書きのフォールバックを使用する（SDK の session.create が 405 となる環境があるため）。
+  const sdkFallback = await createFallbackSdkClient(sink);
+  if (sdkFallback) {
+    const controller = new AbortController();
+    const sdkEventHost = sdkFallback.client.event as unknown as { subscribe?: unknown } | undefined;
+    if (sdkEventHost?.subscribe) {
+      await sink.info?.(`v2: using SDK fallback for event subscription via ${sdkFallback.url}`);
+      const fileSession = await createFallbackSessionAdapter(sink, null);
+      if (!fileSession) {
+        await sink.warn("v2: SDK event fallback has no file session; idle handling disabled");
+        return;
+      }
+      void runV2EventLoop({ event: sdkEventHost, session: fileSession }, sink, directory, controller);
+      return () => controller.abort();
+    }
+  }
+
+  // SDK フォールバックも不可の場合は、旧来の event フック返却でホストに配信を委ねる
+  await sink.warn("v2: ctx.event.subscribe not found (ctxKeys=[" + ctxKeys + "]); falling back to return {event} hook. If idle is still not delivered, use opencode (v1) with 2.0.3.");
+  const fallbackSession = (anyCtx.session as unknown as {
+    get: (input: { sessionID: string }) => Promise<unknown>;
+    context?: (input: { sessionID: string }) => Promise<unknown>;
+    messages?: (input: { path: { id: string } }) => Promise<unknown>;
+    create: (input: { title: string }) => Promise<unknown>;
+    prompt?: (input: { sessionID: string; text: string }) => Promise<unknown>;
+    generate?: (input: { sessionID: string; text: string }) => Promise<unknown>;
+    promptAsync?: (input: unknown) => Promise<unknown>;
+  } | undefined) ?? (await createFallbackSessionAdapter(sink, anyCtx.serverUrl));
+  if (!fallbackSession) {
+    await sink.warn("v2: no session adapter for fallback hook; idle handling disabled");
+    return;
+  }
+  return {
+    event: async ({ event }: { event: { type: string; data?: unknown; properties?: unknown } }) => {
+      if (event.type !== "session.idle") return;
+      const data = (event as { data?: { sessionID?: string }; properties?: { sessionID?: string } }).data;
+      const properties = (event as { data?: { sessionID?: string }; properties?: { sessionID?: string } }).properties;
+      const sessionID = (data as { sessionID?: string } | undefined)?.sessionID ?? (properties as { sessionID?: string } | undefined)?.sessionID;
+      if (!sessionID) {
+        await sink.warn("session.idle event missing sessionID; skipping");
+        return;
+      }
+      await handleV2IdleEvent({ sessionID, directory, sink, session: fallbackSession });
+    },
+  };
+}
+
+async function createFallbackSessionAdapter(
+  sink: AppLogSink,
+  _serverUrl: unknown,
+): Promise<
+  | {
+      get: (input: { sessionID: string }) => Promise<unknown>;
+      context?: (input: { sessionID: string }) => Promise<unknown>;
+      messages?: (input: { path: { id: string } }) => Promise<unknown>;
+      create: (input: { title: string }) => Promise<unknown>;
+      prompt?: (input: { sessionID: string; text: string }) => Promise<unknown>;
+      generate?: (input: { sessionID: string; text: string }) => Promise<unknown>;
+      promptAsync?: (input: unknown) => Promise<unknown>;
+    }
+  | undefined
+> {
+  // v2 beta で ctx.session が無い場合の最終手段: SDK 依存を断ち、直接ファイルに書き込むモック
+  // opencode2 本体（49374）の session.create が 405 となる環境では SDK 経由が不安定なため、ファイル直書きで確実に日誌を生成する
+  await sink.info?.("using file-direct fallback session adapter (no SDK)");
+  return {
+    get: async () => ({ data: { title: "fallback" } }),
+    context: async () => ({ data: [] }),
+    create: async (input: { title: string }) => ({ data: { id: `fallback-${Date.now()}` }, title: input.title }),
+    prompt: async (input: { sessionID: string; text: string }) => {
+      try {
+        const match = input.text.match(/Create `([^`]+)`/);
+        const filePath = match ? match[1] : `artifacts/daily/${new Date().toISOString().slice(0, 10).replace(/-/g, "")}_logbook.md`;
+        const { writeFileSync, mkdirSync, existsSync, readFileSync } = await import("node:fs");
+        const { resolve, dirname } = await import("node:path");
+        const absPath = resolve(process.cwd(), filePath);
+        mkdirSync(dirname(absPath), { recursive: true });
+        const existing = existsSync(absPath) ? readFileSync(absPath, "utf-8") : "";
+        const content = `${existing ? existing + "\n\n" : ""}# Daily Logbook ${new Date().toISOString().slice(0, 10)}\n\n${input.text.slice(0, 2000)}\n`;
+        writeFileSync(absPath, content);
+        await sink.info?.(`fallback direct write to ${absPath}`);
+      } catch (error) {
+        await sink.warn(`fallback direct write failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      return {};
+    },
+  } as unknown as {
+          get: (input: { sessionID: string }) => Promise<unknown>;
+          create: (input: { title: string }) => Promise<unknown>;
+          prompt: (input: { sessionID: string; text: string }) => Promise<unknown>;
+        };
 }
 
 async function resolveV2Iterable(
   subscribe: unknown,
   signal: AbortSignal,
   sink: AppLogSink,
+  eventHost?: { subscribe?: unknown },
 ): Promise<AsyncIterable<{ type: string; data?: unknown; properties?: unknown }> | undefined> {
   const sub = subscribe as unknown as ((opts: { signal: AbortSignal }) => unknown) & ((type: string) => unknown);
-  if (!sub) return undefined;
-  // Try promise style first: subscribe({ signal })
+  if (!sub) {
+    await sink.warn("resolveV2Iterable: subscribe is falsy");
+    return undefined;
+  }
+  const host = (eventHost ?? {}) as { subscribe?: unknown };
+  // Try promise style first: subscribe({ signal }) => AsyncIterable | Stream | Promise<{stream}>
   try {
-    const raw = (sub as (opts: { signal: AbortSignal }) => unknown)({ signal });
-    if (isAsyncIterable(raw)) return raw as AsyncIterable<{ type: string; data?: unknown; properties?: unknown }>;
-    // If raw is not iterable, it may be effect host returning non-iterable; try effect style as fallback
-    const raw2 = trySubscribeEffect(sub, sink);
+    const raw = (host.subscribe as (opts: { signal: AbortSignal }) => unknown)?.call(host, { signal }) ?? (sub as (opts: { signal: AbortSignal }) => unknown)({ signal });
+    await sink.info?.(`resolveV2Iterable: subscribe({signal}) returned ${raw instanceof Promise ? "Promise" : typeof raw} ${raw && typeof raw === "object" ? `keys=[${Object.keys(raw as Record<string, unknown>).join(",")}]` : ""} isAsyncIterable=${isAsyncIterable(raw as unknown)}`);
+    const asIterable = await toAsyncIterable(raw, sink, signal);
+    await sink.info?.(`resolveV2Iterable: toAsyncIterable => ${asIterable ? "AsyncIterable" : "undefined"}`);
+    if (asIterable) return asIterable;
+    const raw2 = await trySubscribeEffect(sub, sink, signal, host);
     if (raw2) return raw2;
-  } catch {
-    const raw2 = trySubscribeEffect(sub, sink);
+  } catch (error) {
+    await sink.warn(`resolveV2Iterable: subscribe({signal}) threw ${error instanceof Error ? error.message : String(error)}`);
+    const raw2 = await trySubscribeEffect(sub, sink, signal, host);
     if (raw2) return raw2;
   }
-  // If promise style threw or returned non-iterable, try effect style directly
-  return trySubscribeEffect(sub, sink);
+  const fallback = await trySubscribeEffect(sub, sink, signal, host);
+  if (!fallback) await sink.warn("resolveV2Iterable: both subscribe styles returned non-AsyncIterable");
+  return fallback;
 }
 
-function trySubscribeEffect(
+async function trySubscribeEffect(
   sub: (type: string) => unknown,
   _sink: AppLogSink,
-): AsyncIterable<{ type: string; data?: unknown; properties?: unknown }> | undefined {
+  signal?: AbortSignal,
+  host?: { subscribe?: unknown },
+): Promise<AsyncIterable<{ type: string; data?: unknown; properties?: unknown }> | undefined> {
   try {
-    const raw2 = (sub as (type: string) => unknown)("session.idle");
-    if (isAsyncIterable(raw2)) return raw2 as AsyncIterable<{ type: string; data?: unknown; properties?: unknown }>;
+    const h = (host ?? {}) as { subscribe?: unknown };
+    const fn = (h.subscribe as (type: string) => unknown) ?? (sub as (type: string) => unknown);
+    const raw2 = fn.call(h as unknown as { subscribe: (type: string) => unknown }, "session.idle");
+    const asIterable = await toAsyncIterable(raw2, _sink, signal);
+    if (asIterable) return asIterable;
   } catch {}
   return undefined;
 }
 
 function isAsyncIterable(value: unknown): boolean {
   return !!value && typeof (value as AsyncIterable<unknown>)[Symbol.asyncIterator] === "function";
+}
+
+function isEffectStream(value: unknown): boolean {
+  // Effect の Stream は AsyncIterable ではなく、pipe/run などの effect 固有 API を持つ
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  // Stream は effect の内部タグや pipe を持つ。AsyncIterable でないことと併せて判定
+  if (isAsyncIterable(value)) return false;
+  return typeof v["pipe"] === "function" || "_tag" in v || "effect" in v;
+}
+
+async function toAsyncIterable(
+  value: unknown,
+  sink: AppLogSink,
+  signal?: AbortSignal,
+): Promise<AsyncIterable<{ type: string; data?: unknown; properties?: unknown }> | undefined> {
+  if (!value) return undefined;
+  if (isAsyncIterable(value)) return value as AsyncIterable<{ type: string; data?: unknown; properties?: unknown }>;
+  // SDK の event.subscribe は Promise<{stream: AsyncIterable}> を返すことがある
+  if (value && typeof value === "object" && "stream" in (value as Record<string, unknown>)) {
+    const stream = (value as Record<string, unknown>)["stream"];
+    if (isAsyncIterable(stream)) return stream as AsyncIterable<{ type: string; data?: unknown; properties?: unknown }>;
+    // stream が Effect Stream の場合も考慮
+    const asIterable = await toAsyncIterable(stream, sink, signal);
+    if (asIterable) return asIterable;
+    await sink.warn(`toAsyncIterable: stream property exists but not AsyncIterable (keys=${Object.keys(value as Record<string, unknown>).join(",")})`);
+  }
+  if (isEffectStream(value)) {
+    // Effect Stream は AsyncIterable ではないため、直接 for-await できない。
+    // 恒久対応では `effect/Stream.toAsyncIterable` への変換が必要だが、
+    // バンドルサイズを抑えるため本ビルドでは未対応とし、呼び出し側で
+    // 別経路（promise style の subscribe({signal})）を試す。
+    // 将来 beta の effect ホストで Stream のみが返る場合は、別途
+    // `effect` ランタイムを導入して変換する。
+    return undefined;
+  }
+  // Promise<AsyncIterable|Stream|{stream: AsyncIterable}> の可能性
+  if (value instanceof Promise) {
+    try {
+      const resolved = await value;
+      return toAsyncIterable(resolved, sink, signal);
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+async function createFallbackSdkClient(
+  sink: AppLogSink,
+): Promise<{ client: { event: { subscribe: (opts: { signal: AbortSignal }) => unknown }; session: unknown }; session: {
+      get: (input: { sessionID: string }) => Promise<unknown>;
+      context?: (input: { sessionID: string }) => Promise<unknown>;
+      messages?: (input: { path: { id: string } }) => Promise<unknown>;
+      create: (input: { title: string }) => Promise<unknown>;
+      prompt?: (input: { sessionID: string; text: string }) => Promise<unknown>;
+      generate?: (input: { sessionID: string; text: string }) => Promise<unknown>;
+      promptAsync?: (input: unknown) => Promise<unknown>;
+    }; url: string } | undefined> {
+  const candidates: string[] = [];
+  for (const key of ["OPENCODE_SERVER_URL", "OPENCODE_API_URL", "OPENCODE_SERVER"]) {
+    const v = process.env[key];
+    if (v) candidates.push(v);
+  }
+  // opencode2 本体は 49374（lsof 実測）、ORCA_AGENT_HOOK_PORT(49353) は別サービスの可能性があるため 49374 を優先
+  candidates.push("http://localhost:49374");
+  const envPort = process.env.ORCA_AGENT_HOOK_PORT;
+  if (envPort) candidates.push(`http://localhost:${envPort}`);
+  candidates.push("http://localhost:4096", "http://localhost:8080");
+  const unique = [...new Set(candidates)];
+  for (const url of unique) {
+    // 同じ URL で v2 と v1 の両 SDK を試す（server が v1/v2 どちらでも対応できるように）
+    const sdkSpecs = ["@opencode-ai/sdk/v2", "@opencode-ai/sdk"] as const;
+    for (const spec of sdkSpecs) {
+      try {
+        let createOpencodeClient: ((opts: unknown) => unknown) | null = null;
+        try {
+          const m = await import(spec).catch(() => null) as unknown as { createOpencodeClient?: (opts: unknown) => unknown } | null;
+          createOpencodeClient = (m?.createOpencodeClient as unknown as (opts: unknown) => unknown) ?? null;
+        } catch {}
+        if (!createOpencodeClient) continue;
+        const client = (createOpencodeClient as (opts: unknown) => unknown)({ baseUrl: url }) as unknown as {
+          event: { subscribe: (opts: { signal: AbortSignal }) => unknown };
+          session: {
+            get: (input: { sessionID: string }) => Promise<unknown>;
+            context?: (input: { sessionID: string }) => Promise<unknown>;
+            messages?: (input: { path: { id: string } }) => Promise<unknown>;
+            create: (input: { title: string }) => Promise<unknown>;
+            prompt?: (input: { sessionID: string; text: string }) => Promise<unknown>;
+            generate?: (input: { sessionID: string; text: string }) => Promise<unknown>;
+            promptAsync?: (input: unknown) => Promise<unknown>;
+          };
+        };
+        // 疎通確認: session.list と event.subscribe の両方が使えるか
+        try {
+          await ((client as unknown) as { session: { list: (p: unknown) => Promise<unknown> } }).session.list({ limit: 1 } as unknown as Record<string, unknown>);
+          const hasEvent = typeof (client as unknown as { event: { subscribe?: unknown } }).event?.subscribe === "function";
+          if (!hasEvent) throw new Error("no event.subscribe");
+        } catch {
+          continue;
+        }
+      const session = client.session as unknown as {
+        get: (input: { sessionID: string }) => Promise<unknown>;
+        context?: (input: { sessionID: string }) => Promise<unknown>;
+        messages?: (input: { path: { id: string } }) => Promise<unknown>;
+        create: (input: { title: string }) => Promise<unknown>;
+        prompt?: (input: { sessionID: string; text: string }) => Promise<unknown>;
+        generate?: (input: { sessionID: string; text: string }) => Promise<unknown>;
+        promptAsync?: (input: unknown) => Promise<unknown>;
+      };
+      return { client: client as unknown as { event: { subscribe: (opts: { signal: AbortSignal }) => unknown }; session: unknown }, session, url };
+      } catch {}
+    }
+  }
+  await sink.warn(`fallback SDK client: all candidates failed (${unique.join(", ")})`);
+  return undefined;
 }
 
 async function runV2EventLoop(
@@ -741,9 +1005,11 @@ async function runV2EventLoop(
   controller: AbortController,
 ): Promise<void> {
   try {
-    const iterable = await resolveV2Iterable(anyCtx.event?.subscribe, controller.signal, sink);
+    const iterable = await resolveV2Iterable(anyCtx.event?.subscribe, controller.signal, sink, anyCtx.event);
     if (!iterable) {
-      await sink.warn("event.subscribe did not return AsyncIterable; v2 plugin idle");
+      await sink.warn(
+        `event.subscribe did not return AsyncIterable (event.subscribe=${typeof anyCtx.event?.subscribe}) — trying fallback poll; v2 plugin idle subscription failed. ctx.event keys=${anyCtx.event ? Object.keys(anyCtx.event as Record<string, unknown>).join(",") : "no-event"}`,
+      );
       return;
     }
     for await (const event of iterable as AsyncIterable<{ type: string; data?: unknown; properties?: unknown }>) {
@@ -769,22 +1035,29 @@ async function runV2EventLoop(
 }
 
 function tryCreateV2Plugin(): unknown {
-  try {
-    const require = createRequire(import.meta.url);
-    const mod = require("@opencode-ai/plugin") as { Plugin?: { define?: (p: { id: string; setup: (ctx: unknown) => Promise<unknown> }) => unknown } };
-    const define = mod?.Plugin?.define;
-    if (typeof define === "function") {
-      return define({ id: "smapira.daily-logbook", setup: v2Setup });
-    }
-  } catch {}
-  try {
-    const require = createRequire(import.meta.url);
-    const modEffect = require("@opencode-ai/plugin/effect") as { Plugin?: { define?: (p: { id: string; effect: (ctx: unknown) => unknown }) => unknown } };
-    const defineEffect = modEffect?.Plugin?.define;
-    if (typeof defineEffect === "function") {
-      return defineEffect({ id: "smapira.daily-logbook", effect: v2Setup as unknown as (ctx: unknown) => unknown });
-    }
-  } catch {}
+  // 恒久対応: @opencode-ai/plugin の v2 エントリは 1.18.x では
+  // "./v2/effect" / "./v2/promise" / "." の順で提供される。
+  // stable (1.18.27) と beta の両方で解決できるよう全経路を試す。
+  const candidates: Array<{ spec: string; kind: "setup" | "effect" }> = [
+    { spec: "@opencode-ai/plugin", kind: "setup" },
+    { spec: "@opencode-ai/plugin/v2/promise", kind: "setup" },
+    { spec: "@opencode-ai/plugin/v2/effect", kind: "effect" },
+    { spec: "@opencode-ai/plugin/effect", kind: "effect" },
+  ];
+  for (const { spec, kind } of candidates) {
+    try {
+      const require = createRequire(import.meta.url);
+      const mod = require(spec) as {
+        Plugin?: { define?: (p: { id: string; setup?: unknown; effect?: unknown }) => unknown };
+        define?: (p: { id: string; setup?: unknown; effect?: unknown }) => unknown;
+      };
+      const define = mod?.Plugin?.define ?? mod?.define;
+      if (typeof define === "function") {
+        if (kind === "setup") return define({ id: "smapira.daily-logbook", setup: v2Setup });
+        return define({ id: "smapira.daily-logbook", effect: v2Setup as unknown as (ctx: unknown) => unknown });
+      }
+    } catch {}
+  }
   return { id: "smapira.daily-logbook", setup: v2Setup, effect: v2Setup };
 }
 

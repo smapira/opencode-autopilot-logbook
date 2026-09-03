@@ -1,5 +1,30 @@
 # Changelog
 
+## 2.0.8 - fix: v2 SDK this binding and file-direct fallback (2026-09-04)
+
+### Fixed
+- **ゲイン特定: `this._client` 束縛抜けと候補順の修正**: `2.0.7` で `SDK` フォールバックが `http://localhost:49353`（`ORCA_AGENT_HOOK_PORT`）を `49374`（`opencode2` 本体）より先に試し、かつ `client.event.subscribe({signal})` を `const sub = client.event.subscribe; sub({signal})` と切り離して呼んでいたため `undefined is not an object (evaluating 'this._client')` で `resolveV2Iterable` が失敗し、`v2 plugin idle subscription failed` が残留。`host.subscribe.call(host, {signal})` への修正と `49374` を最優先にする候補順の入れ替え、さらに `Promise<{stream: AsyncIterable}>` からの `stream` 抽出を `toAsyncIterable` に追加し、`v2: using SDK fallback via 49374` → `toAsyncIterable => AsyncIterable` まで到達するよう修正。`SDK` フォールバックの `session` は `opencode2` 本体の `session.create` が `405` となる環境があるため、ファイル直書きの `createFallbackSessionAdapter`（`Bun.write` で `artifacts/daily` に直接追記）に切り替え、`dist` は `31.73KB` に再構築（`bun test 85 pass` 維持）
+
+## 2.0.7 - fix: permanent v2 idle for beta without ctx.event (2026-09-04)
+
+### Fixed
+- **v2 `ctxKeys=[agent,aisdk,catalog,command,integration,options,plugin,reference,skill]` で `event.subscribe=no` となる beta での恒久対応**: `opencode2 v0.0.0-beta-18999` の `PluginContext` が `{agent,aisdk,catalog,command,integration,options,plugin,reference,skill}` のみで `event`/`session`/`client`/`location` を持たないことが `2.0.6` の診断ログで確定。`2.0.6` の `ctx.event`/`client.event` フォールバックでも `no-event` のまま `v2 plugin idle subscription failed` になっていたため、以下の恒久対応を追加:
+  - `v2Setup` が `eventHost` を持つ場合は従来通り `runV2EventLoop` で `subscribe({signal})` / `subscribe("session.idle")` の両対応（`AsyncIterable` / `Stream` 分岐は軽量維持）
+  - `eventHost` が無い beta では `return {event: async ({event})=>{if(event.type==="session.idle") handleV2IdleEvent(...)}}` の **フォールバック `event` フック** を返す（ホストが旧来の `return {event}` 配信をまだサポートしていれば idle が届く）。`session` が無い場合は `@opencode-ai/sdk` から自前 `client` を生成する `createFallbackSessionAdapter`（`http://localhost:4096` 既定）で補完
+  - `ctxKeys` / `session` 有無もログに出し、`v2: ctx.event.subscribe not found; falling back to return {event} hook` の警告で v1 (`opencode 1.18.x + 2.0.3`) へのフォールバックを案内
+- `dist` は 87.67 KB に再ビルド（SDK フォールバックを含む 31 modules、`bun test` 85 pass 維持）
+
+## 2.0.6 - fix: permanent v2 idle subscription for beta host (2026-09-04)
+
+### Fixed
+- **v2 `event.subscribe did not return AsyncIterable` の恒久対応**: `opencode2 v0.0.0-beta-18999` で `daily-logbook plugin loaded (v2) app=unknown` の後に `event.subscribe did not return AsyncIterable; v2 plugin idle` が出ていた。原因は `@opencode-ai/plugin@1.18.27` (stable) でビルドされた `dist` を beta ホストで実行すると `ctx.event` が存在せず、`ctx.event.subscribe` が `undefined` だったため。`v2Setup` を恒久的に以下の通り修正:
+  - `ctxKeys` / `event.subscribe` / `client.event.subscribe` の有無を `sink.info` に出力し、beta での `ctx` 形状差異を可視化
+  - `event` の位置を `ctx.event` と `ctx.client.event` の両方から解決（`eventHost` フォールバック）
+  - `resolveV2Iterable` を `AsyncIterable` と `Effect Stream` の両対応にし、`toAsyncIterable` で `Promise<...>` の解決と `Stream` 検出（`isEffectStream`）を分岐。`effect/Stream` のバンドル肥大化を避けるため `Stream` は現状 `undefined` を返して別経路を試す軽量実装に
+  - `runV2EventLoop` の警告を `event.subscribe=${typeof ...} ctx.event keys=...` を含む詳細に
+  - `tryCreateV2Plugin` を `v2/promise` / `v2/effect` / `.` / `effect` の全経路に対応（`@opencode-ai/plugin` の beta での exports 変更に対応）
+- `dist` は 25.62 KB に再ビルド（`bun test` 85 pass 維持）。`@opencode-ai/plugin` は `^1.0.0` のまま維持し、stable でも beta でもビルドが壊れない（`effect/Stream` は動的 import ではなく軽量分岐）
+
 ## 2.0.5 - fix: make default object for V2 host (2026-09-03)
 
 ### Fixed

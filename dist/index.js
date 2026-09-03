@@ -1,4 +1,6 @@
 // @bun
+var __require = import.meta.require;
+
 // daily-logbook.ts
 import { existsSync, readFileSync } from "fs";
 import { createRequire } from "module";
@@ -553,47 +555,219 @@ async function handleV2IdleEvent(params) {
 }
 async function v2Setup(ctx) {
   const anyCtx = ctx;
-  const directory = anyCtx.location?.directory ?? anyCtx.directory ?? process.cwd();
+  const directory = anyCtx.location?.directory ?? anyCtx.directory ?? anyCtx.worktree ?? process.cwd();
   const sink = createV2LogSink();
-  await sink.info?.(`daily-logbook plugin loaded (v2) app=${anyCtx.app?.name ?? "unknown"} ${anyCtx.app?.version ?? ""}`);
-  const controller = new AbortController;
-  runV2EventLoop(anyCtx, sink, directory, controller);
-  return () => controller.abort();
-}
-async function resolveV2Iterable(subscribe, signal, sink) {
-  const sub = subscribe;
-  if (!sub)
+  const ctxKeys = (() => {
+    try {
+      return Object.keys(anyCtx).sort().join(",");
+    } catch {
+      return "unknown";
+    }
+  })();
+  const hasEventSubscribe = typeof anyCtx.event?.subscribe === "function";
+  const hasClientEventSubscribe = typeof anyCtx.client?.event?.subscribe === "function";
+  const hasSession = !!anyCtx.session;
+  await sink.info?.(`daily-logbook plugin loaded (v2) app=${anyCtx.app?.name ?? "unknown"} ${anyCtx.app?.version ?? ""} ctxKeys=[${ctxKeys}] event.subscribe=${hasEventSubscribe ? "yes" : "no"} client.event.subscribe=${hasClientEventSubscribe ? "yes" : "no"} session=${hasSession ? "yes" : "no"}`);
+  const eventHost = anyCtx.event ?? anyCtx.client?.event;
+  if (eventHost?.subscribe) {
+    const controller = new AbortController;
+    const session = anyCtx.session ?? await createFallbackSessionAdapter(sink, anyCtx.serverUrl);
+    if (!session) {
+      await sink.warn("v2: no session adapter available (ctx.session missing and fallback failed); idle handling disabled");
+      return;
+    }
+    runV2EventLoop({ event: eventHost, session }, sink, directory, controller);
+    return () => controller.abort();
+  }
+  const sdkFallback = await createFallbackSdkClient(sink);
+  if (sdkFallback) {
+    const controller = new AbortController;
+    const sdkEventHost = sdkFallback.client.event;
+    if (sdkEventHost?.subscribe) {
+      await sink.info?.(`v2: using SDK fallback for event subscription via ${sdkFallback.url}`);
+      const fileSession = await createFallbackSessionAdapter(sink, null);
+      if (!fileSession) {
+        await sink.warn("v2: SDK event fallback has no file session; idle handling disabled");
+        return;
+      }
+      runV2EventLoop({ event: sdkEventHost, session: fileSession }, sink, directory, controller);
+      return () => controller.abort();
+    }
+  }
+  await sink.warn("v2: ctx.event.subscribe not found (ctxKeys=[" + ctxKeys + "]); falling back to return {event} hook. If idle is still not delivered, use opencode (v1) with 2.0.3.");
+  const fallbackSession = anyCtx.session ?? await createFallbackSessionAdapter(sink, anyCtx.serverUrl);
+  if (!fallbackSession) {
+    await sink.warn("v2: no session adapter for fallback hook; idle handling disabled");
     return;
+  }
+  return {
+    event: async ({ event }) => {
+      if (event.type !== "session.idle")
+        return;
+      const data = event.data;
+      const properties = event.properties;
+      const sessionID = data?.sessionID ?? properties?.sessionID;
+      if (!sessionID) {
+        await sink.warn("session.idle event missing sessionID; skipping");
+        return;
+      }
+      await handleV2IdleEvent({ sessionID, directory, sink, session: fallbackSession });
+    }
+  };
+}
+async function createFallbackSessionAdapter(sink, _serverUrl) {
+  await sink.info?.("using file-direct fallback session adapter (no SDK)");
+  return {
+    get: async () => ({ data: { title: "fallback" } }),
+    context: async () => ({ data: [] }),
+    create: async (input) => ({ data: { id: `fallback-${Date.now()}` }, title: input.title }),
+    prompt: async (input) => {
+      try {
+        const match = input.text.match(/Create `([^`]+)`/);
+        const filePath = match ? match[1] : `artifacts/daily/${new Date().toISOString().slice(0, 10).replace(/-/g, "")}_logbook.md`;
+        const { writeFileSync, mkdirSync, existsSync: existsSync2, readFileSync: readFileSync2 } = await import("fs");
+        const { resolve: resolve2, dirname } = await import("path");
+        const absPath = resolve2(process.cwd(), filePath);
+        mkdirSync(dirname(absPath), { recursive: true });
+        const existing = existsSync2(absPath) ? readFileSync2(absPath, "utf-8") : "";
+        const content = `${existing ? existing + `
+
+` : ""}# Daily Logbook ${new Date().toISOString().slice(0, 10)}
+
+${input.text.slice(0, 2000)}
+`;
+        writeFileSync(absPath, content);
+        await sink.info?.(`fallback direct write to ${absPath}`);
+      } catch (error) {
+        await sink.warn(`fallback direct write failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      return {};
+    }
+  };
+}
+async function resolveV2Iterable(subscribe, signal, sink, eventHost) {
+  const sub = subscribe;
+  if (!sub) {
+    await sink.warn("resolveV2Iterable: subscribe is falsy");
+    return;
+  }
+  const host = eventHost ?? {};
   try {
-    const raw = sub({ signal });
-    if (isAsyncIterable(raw))
-      return raw;
-    const raw2 = trySubscribeEffect(sub, sink);
+    const raw = host.subscribe?.call(host, { signal }) ?? sub({ signal });
+    await sink.info?.(`resolveV2Iterable: subscribe({signal}) returned ${raw instanceof Promise ? "Promise" : typeof raw} ${raw && typeof raw === "object" ? `keys=[${Object.keys(raw).join(",")}]` : ""} isAsyncIterable=${isAsyncIterable(raw)}`);
+    const asIterable = await toAsyncIterable(raw, sink, signal);
+    await sink.info?.(`resolveV2Iterable: toAsyncIterable => ${asIterable ? "AsyncIterable" : "undefined"}`);
+    if (asIterable)
+      return asIterable;
+    const raw2 = await trySubscribeEffect(sub, sink, signal, host);
     if (raw2)
       return raw2;
-  } catch {
-    const raw2 = trySubscribeEffect(sub, sink);
+  } catch (error) {
+    await sink.warn(`resolveV2Iterable: subscribe({signal}) threw ${error instanceof Error ? error.message : String(error)}`);
+    const raw2 = await trySubscribeEffect(sub, sink, signal, host);
     if (raw2)
       return raw2;
   }
-  return trySubscribeEffect(sub, sink);
+  const fallback = await trySubscribeEffect(sub, sink, signal, host);
+  if (!fallback)
+    await sink.warn("resolveV2Iterable: both subscribe styles returned non-AsyncIterable");
+  return fallback;
 }
-function trySubscribeEffect(sub, _sink) {
+async function trySubscribeEffect(sub, _sink, signal, host) {
   try {
-    const raw2 = sub("session.idle");
-    if (isAsyncIterable(raw2))
-      return raw2;
+    const h = host ?? {};
+    const fn = h.subscribe ?? sub;
+    const raw2 = fn.call(h, "session.idle");
+    const asIterable = await toAsyncIterable(raw2, _sink, signal);
+    if (asIterable)
+      return asIterable;
   } catch {}
   return;
 }
 function isAsyncIterable(value) {
   return !!value && typeof value[Symbol.asyncIterator] === "function";
 }
+function isEffectStream(value) {
+  if (!value || typeof value !== "object")
+    return false;
+  const v = value;
+  if (isAsyncIterable(value))
+    return false;
+  return typeof v["pipe"] === "function" || "_tag" in v || "effect" in v;
+}
+async function toAsyncIterable(value, sink, signal) {
+  if (!value)
+    return;
+  if (isAsyncIterable(value))
+    return value;
+  if (value && typeof value === "object" && "stream" in value) {
+    const stream = value["stream"];
+    if (isAsyncIterable(stream))
+      return stream;
+    const asIterable = await toAsyncIterable(stream, sink, signal);
+    if (asIterable)
+      return asIterable;
+    await sink.warn(`toAsyncIterable: stream property exists but not AsyncIterable (keys=${Object.keys(value).join(",")})`);
+  }
+  if (isEffectStream(value)) {
+    return;
+  }
+  if (value instanceof Promise) {
+    try {
+      const resolved = await value;
+      return toAsyncIterable(resolved, sink, signal);
+    } catch {
+      return;
+    }
+  }
+  return;
+}
+async function createFallbackSdkClient(sink) {
+  const candidates = [];
+  for (const key of ["OPENCODE_SERVER_URL", "OPENCODE_API_URL", "OPENCODE_SERVER"]) {
+    const v = process.env[key];
+    if (v)
+      candidates.push(v);
+  }
+  candidates.push("http://localhost:49374");
+  const envPort = process.env.ORCA_AGENT_HOOK_PORT;
+  if (envPort)
+    candidates.push(`http://localhost:${envPort}`);
+  candidates.push("http://localhost:4096", "http://localhost:8080");
+  const unique = [...new Set(candidates)];
+  for (const url of unique) {
+    const sdkSpecs = ["@opencode-ai/sdk/v2", "@opencode-ai/sdk"];
+    for (const spec of sdkSpecs) {
+      try {
+        let createOpencodeClient = null;
+        try {
+          const m = await import(spec).catch(() => null);
+          createOpencodeClient = m?.createOpencodeClient ?? null;
+        } catch {}
+        if (!createOpencodeClient)
+          continue;
+        const client = createOpencodeClient({ baseUrl: url });
+        try {
+          await client.session.list({ limit: 1 });
+          const hasEvent = typeof client.event?.subscribe === "function";
+          if (!hasEvent)
+            throw new Error("no event.subscribe");
+        } catch {
+          continue;
+        }
+        const session = client.session;
+        return { client, session, url };
+      } catch {}
+    }
+  }
+  await sink.warn(`fallback SDK client: all candidates failed (${unique.join(", ")})`);
+  return;
+}
 async function runV2EventLoop(anyCtx, sink, directory, controller) {
   try {
-    const iterable = await resolveV2Iterable(anyCtx.event?.subscribe, controller.signal, sink);
+    const iterable = await resolveV2Iterable(anyCtx.event?.subscribe, controller.signal, sink, anyCtx.event);
     if (!iterable) {
-      await sink.warn("event.subscribe did not return AsyncIterable; v2 plugin idle");
+      await sink.warn(`event.subscribe did not return AsyncIterable (event.subscribe=${typeof anyCtx.event?.subscribe}) \u2014 trying fallback poll; v2 plugin idle subscription failed. ctx.event keys=${anyCtx.event ? Object.keys(anyCtx.event).join(",") : "no-event"}`);
       return;
     }
     for await (const event of iterable) {
@@ -620,22 +794,24 @@ async function runV2EventLoop(anyCtx, sink, directory, controller) {
   }
 }
 function tryCreateV2Plugin() {
-  try {
-    const require2 = createRequire(import.meta.url);
-    const mod = require2("@opencode-ai/plugin");
-    const define = mod?.Plugin?.define;
-    if (typeof define === "function") {
-      return define({ id: "smapira.daily-logbook", setup: v2Setup });
-    }
-  } catch {}
-  try {
-    const require2 = createRequire(import.meta.url);
-    const modEffect = require2("@opencode-ai/plugin/effect");
-    const defineEffect = modEffect?.Plugin?.define;
-    if (typeof defineEffect === "function") {
-      return defineEffect({ id: "smapira.daily-logbook", effect: v2Setup });
-    }
-  } catch {}
+  const candidates = [
+    { spec: "@opencode-ai/plugin", kind: "setup" },
+    { spec: "@opencode-ai/plugin/v2/promise", kind: "setup" },
+    { spec: "@opencode-ai/plugin/v2/effect", kind: "effect" },
+    { spec: "@opencode-ai/plugin/effect", kind: "effect" }
+  ];
+  for (const { spec, kind } of candidates) {
+    try {
+      const require2 = createRequire(import.meta.url);
+      const mod = require2(spec);
+      const define = mod?.Plugin?.define ?? mod?.define;
+      if (typeof define === "function") {
+        if (kind === "setup")
+          return define({ id: "smapira.daily-logbook", setup: v2Setup });
+        return define({ id: "smapira.daily-logbook", effect: v2Setup });
+      }
+    } catch {}
+  }
   return { id: "smapira.daily-logbook", setup: v2Setup, effect: v2Setup };
 }
 var DailyLogbookPluginV2 = tryCreateV2Plugin();

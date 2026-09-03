@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.0.0 - BREAKING: migrate to @opencode-ai/plugin beta (unreleased / beta branch)
+## 2.0.0 - BREAKING: migrate to @opencode-ai/plugin beta (2026-09-03)
 
 ### BREAKING
 - **V2 Plugin API**: `DailyLogbookPlugin` (V1 `Plugin = async ({client,directory})=>({event})`) は温存しつつ、`Plugin.define({ id: "smapira.daily-logbook", setup(ctx) })` による V2 対応を追加（デュアル対応）。V2 では `ctx.event.subscribe({ signal }) => AsyncIterable<V2Event>` + `event.data.sessionID` / `ctx.session.get({ sessionID })` / `ctx.session.context({ sessionID })` / `ctx.session.create({ title })` / `ctx.session.prompt({ sessionID, text })` のフラット形状に移行。V1 の `path:{id}` / `body:{parts}` は廃止。対照表は `daily-logbook.ts` コメントを参照

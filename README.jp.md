@@ -107,7 +107,13 @@ npm list -g opencode-autopilot-logbook
 
 ## アンインストール
 
-`npm uninstall -g` だけでは設定ファイルとキャッシュが残ります。4箇所（グローバル設定・プロジェクトローカル設定・npm global・キャッシュ）をすべて掃除してください。本節はアンインストール後に**ユーザーが自分で再検出（セルフチェック）できる完全版**です。ソースを読み返さずに下の「検証 — 残留の再検出」ブロックだけで再確認できます。
+`npm uninstall -g` だけでは設定ファイルとキャッシュが残ります。4箇所（グローバル設定・プロジェクトローカル設定・npm global・キャッシュ）をすべて掃除してください。
+
+> ```bash
+> bash scripts/complete-uninstall.sh          # 本実行
+> bash scripts/complete-uninstall.sh --dry-run # 何が消えるかプレビュー
+> ```
+> 実行後は下の `検証 — 残留の再検出` ブロックで再確認してください。詳細は `scripts/complete-uninstall.sh` を参照。
 
 #### v1 — `opencode` 1.18.x（`~/.config/opencode/opencode.json` の `plugin` キーを読む）
 
@@ -183,107 +189,6 @@ rm -rf ~/.cache/opencode/npm/opencode-autopilot-logbook* ~/.cache/opencode/npm/l
 # 4. ローカル残留（v1 と同じ）
 cat .opencode/opencode.json 2>/dev/null | python3 -m json.tool | grep -A5 plugin || echo "no local .opencode/opencode.json"
 ```
-
-#### 検証 — 残留の再検出（セルフチェック）
-
-アンインストール後に以下を実行してください。すべて `clean` / `empty` / `no ...` と表示されれば完全削除です。このブロックだけで再検出できるようにしています。ソースの再読は不要です。**v3 では Orca 共有設定と全ファイルスキャンを追加し、従来版で見逃していた残留をカバーしています。**
-
-```bash
-echo "=== 1/9 npm global ==="; npm list -g opencode-autopilot-logbook 2>&1 | head -n 5; echo "(empty = clean)"
-echo "=== 2/9 グローバル設定: opencode.json（v1, キー: plugin）==="; cat ~/.config/opencode/opencode.json 2>/dev/null | python3 -m json.tool | grep -A5 '"plugin"\|"plugins"' || echo "no plugin/plugins key — clean"
-echo "=== 3/9 グローバル設定: opencode.jsonc（v2, キー: plugin + plugins）==="; cat ~/.config/opencode/opencode.jsonc 2>/dev/null | python3 -m json.tool | grep -A5 '"plugin"\|"plugins"' || echo "no plugin/plugins key — clean"
-echo "=== 4/9 v2 CLI ==="; opencode2 plugin list 2>&1 | head -n 20; echo '（期待値: "No plugins found" または autopilot が無いこと）'
-echo "=== 5/9 キャッシュ（packages + npm）==="; ls -1 ~/.cache/opencode/packages/ 2>&1 | grep -E "autopilot|list" || echo "packages cache clean"; ls -1 ~/.cache/opencode/npm/ 2>&1 | grep -E "autopilot|list" || echo "npm cache clean"
-echo "=== 6/9 ローカル残留（リポジトリ直下で実行）==="; cat .opencode/opencode.json 2>/dev/null | python3 -m json.tool | grep -A5 '"plugin"\|"plugins"' || echo "no local .opencode/opencode.json — clean"; cat .github/opencode.json 2>/dev/null | python3 -m json.tool | grep -A5 '"plugin"\|"plugins"' || echo "no .github/opencode.json — clean"; ls ~/.config/opencode/*.bak 2>/dev/null | head -n 5 || echo "no .bak files"
-echo "=== 7/9 Orca 共有設定（従来版で見逃していた箇所）==="; cat "$HOME/Library/Application Support/orca/opencode-hooks/shared/opencode.json" 2>/dev/null | python3 -m json.tool | grep -A5 '"plugin"\|"plugins"' || echo "no Orca shared plugin — clean"
-echo "=== 8/9 その他の残留 ==="; env | grep -E "OPENCODE_DAILY" || echo "no OPENCODE_DAILY env — clean"; ls -lh artifacts/daily/ 2>/dev/null | head -n 20 || echo "no artifacts/daily"
-echo "=== 9/9 深掘りスキャン（全 opencode.json* と両キャッシュ）==="; grep -r "autopilot" ~/ --include="opencode.json*" 2>/dev/null | grep -v ".cache/opencode/packages" | grep -v ".cache/opencode/npm" | head -n 20 || echo "grep scan clean（opencode.json* に autopilot なし）"; find ~/.cache/opencode -maxdepth 4 -name "*autopilot*" 2>/dev/null | head -n 20 || echo "cache deep scan clean"
-```
-
-コピペ用ワンライナー（同じ検査を1行で）:
-
-```bash
-echo "--- npm global ---" && npm list -g opencode-autopilot-logbook 2>&1 | head -n 5; echo "--- opencode.json ---" && cat ~/.config/opencode/opencode.json 2>/dev/null | python3 -m json.tool | grep -E "plugin|plugins" || echo "clean"; echo "--- opencode.jsonc ---" && cat ~/.config/opencode/opencode.jsonc 2>/dev/null | python3 -m json.tool | grep -E "plugin|plugins" || echo "clean"; echo "--- opencode2 plugin list ---" && opencode2 plugin list 2>&1 | head -n 5; echo "--- cache packages ---" && ls ~/.cache/opencode/packages/ 2>&1 | grep -E "autopilot|list" || echo "packages cache clean"; echo "--- cache npm ---" && ls ~/.cache/opencode/npm/ 2>&1 | grep -E "autopilot|list" || echo "npm cache clean"; echo "--- local .opencode/opencode.json ---" && cat .opencode/opencode.json 2>/dev/null | python3 -m json.tool | grep -E "plugin|plugins" || echo "clean"; echo "--- Orca shared ---" && cat "$HOME/Library/Application Support/orca/opencode-hooks/shared/opencode.json" 2>/dev/null | python3 -m json.tool | grep -E "plugin|plugins" || echo "Orca clean"; echo "--- grep scan ---" && grep -r "autopilot" ~/ --include="opencode.json*" 2>/dev/null | grep -v ".cache" | head -n 5 || echo "grep clean"; echo "--- env ---" && env | grep OPENCODE_DAILY || echo "no env"
-```
-
-Orca 共有にまだ `opencode-autopilot-logbook` が残っていた場合の除去:
-
-```bash
-python3 -c "
-import json, pathlib
-p=pathlib.Path.home()/'Library/Application Support/orca/opencode-hooks/shared/opencode.json'
-if p.exists():
-    j=json.loads(p.read_text())
-    for k in ('plugin','plugins'):
-        if k in j:
-            v=j[k]
-            if k=='plugin':
-                j[k]=[x for x in v if x not in ('opencode-autopilot-logbook','opencode-autopilot-logbook@2.0.5','list')]
-            else:
-                j[k]=[x for x in v if (x if isinstance(x,str) else x.get('package')) not in ('opencode-autopilot-logbook','opencode-autopilot-logbook@2.0.5','list')]
-            if not j[k]: j.pop(k,None)
-    p.write_text(json.dumps(j, indent=2)+'\n')
-    print(f'cleaned Orca shared {p}:', j)
-else:
-    print('no Orca shared config')
-"
-# ローカル汚染（.github/opencode.json + .opencode/opencode.json）とバックアップも除去
-python3 -c "
-import json, pathlib
-for p in [pathlib.Path('.opencode/opencode.json'), pathlib.Path('.github/opencode.json')]:
-    if p.exists():
-        j=json.loads(p.read_text())
-        for k in ('plugin','plugins'):
-            if k in j:
-                v=j[k]
-                if k=='plugin':
-                    j[k]=[x for x in v if x not in ('opencode-autopilot-logbook','opencode-autopilot-logbook@2.0.5','list')]
-                else:
-                    j[k]=[x for x in v if (x if isinstance(x,str) else x.get('package')) not in ('opencode-autopilot-logbook','opencode-autopilot-logbook@2.0.5','list')]
-                if not j[k]: j.pop(k,None)
-        if set(j.keys())=={'\$schema'}: p.unlink(); print(f'removed {p} (only schema left)')
-        else: p.write_text(json.dumps(j, indent=2)+'\n'); print(f'cleaned {p}:', j)
-"
-rm -f ~/.config/opencode/opencode.jsonc.bak  # 任意: autopilot を含むバックアップを削除
-```
-
-期待されるクリーンな出力（v3・究極版）:
-
-```
---- npm global ---
-... (empty)
---- opencode.json ---
-clean  （または autopilot/list を含まない plugin 一覧）
---- opencode.jsonc ---
-clean  （または autopilot/list を含まない plugin 一覧）
---- opencode2 plugin list ---
-No plugins found
---- cache packages ---
-packages cache clean
---- cache npm ---
-npm cache clean
---- local .opencode/opencode.json ---
-clean
---- Orca shared ---
-Orca clean
---- grep scan ---
-grep clean
---- env ---
-no env
-```
-
-いずれかの行で `opencode-autopilot-logbook` や `list` が再表示されたら、上の v1/v2 のワンライナーを再実行し、この検証ブロックを再実行してください。
-
-## 互換性
-
-| チャネル | バイナリ | 設定ファイル | プラグインキー | パッケージ |
-|---------|----------|--------------|----------------|-----------|
-| **v1 stable** | `opencode` 1.18.x (Homebrew `anomalyco/opencode`) | `~/.config/opencode/opencode.json` | `plugin: ["..."]` | `opencode-autopilot-logbook@2.0.3` |
-| **v2 beta** | `opencode2` 0.0.0-beta-xxxxx (`@opencode-ai/cli@beta`) | `~/.config/opencode/opencode.jsonc` | `plugins: [{package:"..."}]` | `opencode-autopilot-logbook@2.0.5` |
-
-* `2.0.3` が両ホストで動作する最後のバージョン（ハイブリッド default）です。`2.0.5` は **v2 専用** — `export default` がオブジェクト（`{id, setup, effect}`）のため v1 では `TypeError` になります。詳細は `CHANGELOG.md ## 2.0.5`。
-* beta 期間中は V2 API が再 breaking する可能性があります。`main` の `package.json` は `@opencode-ai/plugin ^1.0.0` のまま維持し、beta ブランチでのみ `@beta` に切り替えます。
-* API 差分: `event.properties.sessionID` → `event.data.sessionID`、`client.session.get({path:{id}})` → `ctx.session.get({sessionID})`、`ctx.app.log` → `console`。詳細は `CHANGELOG.md ## 2.0.0` と `daily-logbook.ts` 冒頭の対照表を参照。
 
 ---
 

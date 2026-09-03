@@ -109,7 +109,13 @@ npm list -g opencode-autopilot-logbook
 
 ## Uninstall
 
-`npm uninstall -g` alone leaves config and cache. Clean all 4 places — global config, local project config, npm global, and cache. The section below also includes a **self-detection checklist** so you can re-verify at any time without re-reading the source.
+`npm uninstall -g` alone leaves config and cache. Clean all 4 places — global config, local project config, npm global, and cache.
+
+> ```bash
+> bash scripts/complete-uninstall.sh          # run for real
+> bash scripts/complete-uninstall.sh --dry-run # preview what will be removed
+> ```
+> Then verify with the `Verify — Detect Any Remnants` block below. See `scripts/complete-uninstall.sh` for the exact commands.
 
 #### v1 — `opencode` 1.18.x (reads `~/.config/opencode/opencode.json`, key `plugin`)
 
@@ -186,107 +192,7 @@ rm -rf ~/.cache/opencode/npm/opencode-autopilot-logbook* ~/.cache/opencode/npm/l
 cat .opencode/opencode.json 2>/dev/null | python3 -m json.tool | grep -A5 plugin || echo "no local .opencode/opencode.json"
 ```
 
-#### Verify — Detect Any Remnants (Self-Check)
-
-Run this after uninstall to confirm nothing is left. All checks should print `clean` / `empty` / `no ...` if removal succeeded. Keep this block as your re-detection script — no source read needed. **v3 of this checklist adds Orca shared config and full filesystem scan** that previous versions missed.
-
-```bash
-echo "=== 1/9 npm global ==="; npm list -g opencode-autopilot-logbook 2>&1 | head -n 5; echo "(empty = clean)"
-echo "=== 2/9 global config: opencode.json (v1, key: plugin) ==="; cat ~/.config/opencode/opencode.json 2>/dev/null | python3 -m json.tool | grep -A5 '"plugin"\|"plugins"' || echo "no plugin/plugins key — clean"
-echo "=== 3/9 global config: opencode.jsonc (v2, keys: plugin + plugins) ==="; cat ~/.config/opencode/opencode.jsonc 2>/dev/null | python3 -m json.tool | grep -A5 '"plugin"\|"plugins"' || echo "no plugin/plugins key — clean"
-echo "=== 4/9 v2 CLI ==="; opencode2 plugin list 2>&1 | head -n 20; echo '(expect: "No plugins found" or no autopilot entry)'
-echo "=== 5/9 cache (packages + npm) ==="; ls -1 ~/.cache/opencode/packages/ 2>&1 | grep -E "autopilot|list" || echo "packages cache clean"; ls -1 ~/.cache/opencode/npm/ 2>&1 | grep -E "autopilot|list" || echo "npm cache clean"
-echo "=== 6/9 local project configs (run from repo root) ==="; cat .opencode/opencode.json 2>/dev/null | python3 -m json.tool | grep -A5 '"plugin"\|"plugins"' || echo "no local .opencode/opencode.json — clean"; cat .github/opencode.json 2>/dev/null | python3 -m json.tool | grep -A5 '"plugin"\|"plugins"' || echo "no .github/opencode.json — clean"; ls ~/.config/opencode/*.bak 2>/dev/null | head -n 5 || echo "no .bak files"
-echo "=== 7/9 Orca shared config (missed in earlier README) ==="; cat "$HOME/Library/Application Support/orca/opencode-hooks/shared/opencode.json" 2>/dev/null | python3 -m json.tool | grep -A5 '"plugin"\|"plugins"' || echo "no Orca shared plugin — clean"
-echo "=== 8/9 optional remnants ==="; env | grep -E "OPENCODE_DAILY" || echo "no OPENCODE_DAILY env — clean"; ls -lh artifacts/daily/ 2>/dev/null | head -n 20 || echo "no artifacts/daily"
-echo "=== 9/9 deep scan (covers ALL opencode.json + both cache trees) ==="; grep -r "autopilot" ~/ --include="opencode.json*" 2>/dev/null | grep -v ".cache/opencode/packages" | grep -v ".cache/opencode/npm" | head -n 20 || echo "grep scan clean (no autopilot in any opencode.json*)"; find ~/.cache/opencode -maxdepth 4 -name "*autopilot*" 2>/dev/null | head -n 20 || echo "cache deep scan clean"
-```
-
-Full one-liner for copy-paste (same checks, compact):
-
-```bash
-echo "--- npm global ---" && npm list -g opencode-autopilot-logbook 2>&1 | head -n 5; echo "--- opencode.json ---" && cat ~/.config/opencode/opencode.json 2>/dev/null | python3 -m json.tool | grep -E "plugin|plugins" || echo "clean"; echo "--- opencode.jsonc ---" && cat ~/.config/opencode/opencode.jsonc 2>/dev/null | python3 -m json.tool | grep -E "plugin|plugins" || echo "clean"; echo "--- opencode2 plugin list ---" && opencode2 plugin list 2>&1 | head -n 5; echo "--- cache packages ---" && ls ~/.cache/opencode/packages/ 2>&1 | grep -E "autopilot|list" || echo "packages cache clean"; echo "--- cache npm ---" && ls ~/.cache/opencode/npm/ 2>&1 | grep -E "autopilot|list" || echo "npm cache clean"; echo "--- local .opencode/opencode.json ---" && cat .opencode/opencode.json 2>/dev/null | python3 -m json.tool | grep -E "plugin|plugins" || echo "clean"; echo "--- Orca shared ---" && cat "$HOME/Library/Application Support/orca/opencode-hooks/shared/opencode.json" 2>/dev/null | python3 -m json.tool | grep -E "plugin|plugins" || echo "Orca clean"; echo "--- grep scan ---" && grep -r "autopilot" ~/ --include="opencode.json*" 2>/dev/null | grep -v ".cache" | head -n 5 || echo "grep clean"; echo "--- env ---" && env | grep OPENCODE_DAILY || echo "no env"
-```
-
-If Orca shared still shows `opencode-autopilot-logbook`, clean it:
-
-```bash
-python3 -c "
-import json, pathlib
-p=pathlib.Path.home()/'Library/Application Support/orca/opencode-hooks/shared/opencode.json'
-if p.exists():
-    j=json.loads(p.read_text())
-    for k in ('plugin','plugins'):
-        if k in j:
-            v=j[k]
-            if k=='plugin':
-                j[k]=[x for x in v if x not in ('opencode-autopilot-logbook','opencode-autopilot-logbook@2.0.5','list')]
-            else:
-                j[k]=[x for x in v if (x if isinstance(x,str) else x.get('package')) not in ('opencode-autopilot-logbook','opencode-autopilot-logbook@2.0.5','list')]
-            if not j[k]: j.pop(k,None)
-    p.write_text(json.dumps(j, indent=2)+'\n')
-    print(f'cleaned Orca shared {p}:', j)
-else:
-    print('no Orca shared config')
-"
-# also clean local pollutions that previous README missed: .github/opencode.json + .opencode/opencode.json + .bak
-python3 -c "
-import json, pathlib
-for p in [pathlib.Path('.opencode/opencode.json'), pathlib.Path('.github/opencode.json')]:
-    if p.exists():
-        j=json.loads(p.read_text())
-        for k in ('plugin','plugins'):
-            if k in j:
-                v=j[k]
-                if k=='plugin':
-                    j[k]=[x for x in v if x not in ('opencode-autopilot-logbook','opencode-autopilot-logbook@2.0.5','list')]
-                else:
-                    j[k]=[x for x in v if (x if isinstance(x,str) else x.get('package')) not in ('opencode-autopilot-logbook','opencode-autopilot-logbook@2.0.5','list')]
-                if not j[k]: j.pop(k,None)
-        # remove file if only \$schema remains
-        if set(j.keys())=={'\$schema'}: p.unlink(); print(f'removed {p} (only schema left)')
-        else: p.write_text(json.dumps(j, indent=2)+'\n'); print(f'cleaned {p}:', j)
-"
-rm -f ~/.config/opencode/opencode.jsonc.bak  # optional: remove backup that still contains autopilot
-```
-
-Expected clean output (v3 — ultimate):
-
-```
---- npm global ---
-... (empty)
---- opencode.json ---
-clean  (or plugin list without autopilot/list)
---- opencode.jsonc ---
-clean  (or plugin list without autopilot/list)
---- opencode2 plugin list ---
-No plugins found
---- cache packages ---
-packages cache clean
---- cache npm ---
-npm cache clean
---- local .opencode/opencode.json ---
-clean
---- Orca shared ---
-Orca clean
---- grep scan ---
-grep clean
---- env ---
-no env
-```
-
-If any line still shows `opencode-autopilot-logbook` or `list`, re-run the one-liner in the v1/v2 section above, then re-run this Verify block.
-
-## Compatibility
-
-| Channel | Binary | Config file | Plugin key | Package |
-|---------|--------|-------------|------------|---------|
-| **v1 stable** | `opencode` 1.18.x (Homebrew `anomalyco/opencode`) | `~/.config/opencode/opencode.json` | `plugin: ["..."]` | `opencode-autopilot-logbook@2.0.3` |
-| **v2 beta** | `opencode2` 0.0.0-beta-xxxxx (`@opencode-ai/cli@beta`) | `~/.config/opencode/opencode.jsonc` | `plugins: [{package:"..."}]` | `opencode-autopilot-logbook@2.0.5` |
-
-* `2.0.3` is the last version that works on **both** hosts (hybrid default). `2.0.5` is **v2-only** — its `export default` is an object (`{id, setup, effect}`) so v1 host (`default` called as function) throws `TypeError`. See `CHANGELOG.md ## 2.0.5`.
-* During beta the V2 API may still break. `package.json` on `main` stays on `@opencode-ai/plugin ^1.0.0`; switch to `@beta` on the beta branch.
-* API differences: `event.properties.sessionID` → `event.data.sessionID`, `client.session.get({path:{id}})` → `ctx.session.get({sessionID})`, `ctx.app.log` → `console`. See `CHANGELOG.md ## 2.0.0` and `daily-logbook.ts` header table.
+----
 
 ## Environment Variables
 

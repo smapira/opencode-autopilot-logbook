@@ -37,6 +37,22 @@ Quit and relaunch OpenCode.
 - Start a session, do some work, then let it idle
 - A daily report will be generated automatically
 
+### Update
+
+```bash
+npm update -g opencode-autopilot-logbook
+# Or
+npm install -g opencode-autopilot-logbook@latest
+
+# OpenCode Plugin side
+rm -rf ~/.cache/opencode/packages/opencode-autopilot-logbook*
+opencode plugin opencode-autopilot-logbook -g
+
+# Evaluate
+npm list -g opencode-autopilot-logbook
+npm view opencode-autopilot-logbook version
+```
+
 ## Uninstall
 
 ```bash

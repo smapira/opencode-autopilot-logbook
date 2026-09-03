@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# .githooks/post-checkout — checkout/branch切替後に index を再生成
+# $1=prev HEAD, $2=new HEAD, $3=branch checkout flag (1=branch checkout)
+set -euo pipefail
+# ファイル切替のない checkout（例: ファイルのみの checkout）ではスキップ
+if [[ "${3:-0}" == "0" ]]; then
+  exit 0
+fi
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+exec "$SCRIPT_DIR/post-commit" "$@"

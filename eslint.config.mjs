@@ -38,4 +38,37 @@ export default tseslint.config(
       ],
     },
   },
+
+  {
+    files: ["src/domain/**/*.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["**/adapters/**", "**/infrastructure/**", "**/application/**"],
+              message: "domain must not depend on outer layers (clean architecture violation)",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    files: ["src/application/**/*.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["**/adapters/**"],
+              message: "application must not depend on adapters (clean architecture violation)",
+            },
+          ],
+        },
+      ],
+    },
+  },
 );

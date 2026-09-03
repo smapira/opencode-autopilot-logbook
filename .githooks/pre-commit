@@ -14,12 +14,16 @@ echo "[2/4] ESLint + Cyclomatic Complexity"
 npx eslint .
 
 echo ""
-echo "[3/4] Bun tests"
+echo "[3/5] Bun tests"
 bun test
 
 echo ""
-echo "[4/4] Circular dependency check"
+echo "[4/5] Circular dependency check"
 npx madge --circular --extensions ts --warning . || echo "madge not installed or no circular deps"
+
+echo ""
+echo "[5/5] Diagnostic log checks"
+bun scripts/verify-diagnostic-logs.ts
 
 echo ""
 echo "========================================"

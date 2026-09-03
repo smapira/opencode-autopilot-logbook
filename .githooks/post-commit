@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# .githooks/post-commit — Code-Based Memory index を非同期で再生成
+# hkdn.elix 再作成時に失われた hook の復旧用。commit 後に fast モードで軽量再index
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+BIN="/Users/bookair18/.local/bin/codebase-memory-mcp"
+MODE="${CODEBASE_MEMORY_MODE:-fast}"
+
+if [[ ! -x "$BIN" ]]; then
+  if command -v codebase-memory-mcp >/dev/null 2>&1; then
+    BIN="$(command -v codebase-memory-mcp)"
+  else
+    echo "[codebase-memory] skipped: binary not found ($BIN)" >&2
+    exit 0
+  fi
+fi
+
+# バックグラウンドで実行（pre-commit の高速性を損ねないため post-commit で実行）
+# ログは .git/codebase-memory-reindex.log に残す
+LOG="$REPO_ROOT/.git/codebase-memory-reindex.log"
+echo "[codebase-memory] reindex triggered at $(date -Iseconds) mode=$MODE pid=$$" >> "$LOG"
+
+# fast は <5秒、moderate は類似度まで含める。CIでは full を使う場合は MODE=full で呼ぶ
+nohup "$BIN" cli index_repository --repo-path "$REPO_ROOT" --mode "$MODE" >> "$LOG" 2>&1 &
+PID=$!
+echo "[codebase-memory] reindex started (mode=$MODE, pid=$PID) -> $LOG"
+# 親シェルは待たない（hook は即終了）
+disown 2>/dev/null || true
+exit 0

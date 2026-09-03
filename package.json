@@ -11,7 +11,7 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "build": "bun build daily-logbook.ts --target=bun --outfile dist/index.js",
+    "build": "bun build src/plugin.ts --target=bun --outfile dist/index.js",
     "prepublishOnly": "bun run build",
     "test": "bun test"
   },

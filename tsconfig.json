@@ -16,6 +16,6 @@
     "declaration": false,
     "sourceMap": false
   },
-  "include": ["daily-logbook.ts", "test/**/*.ts", "daily-logbook.v2.ts"],
+  "include": ["daily-logbook.ts", "src/**/*.ts", "test/**/*.ts", "daily-logbook.v2.ts"],
   "exclude": ["node_modules", "dist", ".opencode", ".cache"]
 }

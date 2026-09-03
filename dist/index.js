@@ -1,42 +1,10 @@
 // @bun
 var __require = import.meta.require;
 
-// daily-logbook.ts
-import { existsSync, readFileSync } from "fs";
-import { createRequire } from "module";
-import { homedir } from "os";
-import { basename, join, resolve } from "path";
-import { Database } from "bun:sqlite";
-var SERVICE_NAME = "daily-logbook-plugin";
-var GENERATED_TITLE_PREFIX = "[daily-logbook:auto]";
-var DUPLICATE_WINDOW_MS = 90000;
-var TRANSCRIPT_MAX_MESSAGES = 80;
-var TRANSCRIPT_MAX_CHARS = 12000;
-var inFlightSessionIds = new Set;
-var dailyLimitInFlightByDate = new Set;
-var recentlyTriggeredAtBySessionId = new Map;
-var DEFAULT_OUTPUT_DIR = "artifacts/daily";
-function getOutputDir() {
-  return process.env.OPENCODE_DAILY_LOGBOOK_OUTPUT_DIR || DEFAULT_OUTPUT_DIR;
-}
-var SAMPLE_TEMPLATE = `Create a daily logbook based on the session {{ sessionId }}.
+// src/application/generate-logbook.usecase.ts
+import { basename, resolve as resolve4 } from "path";
 
-## Steps
-
-1. Check today's date ({{ dateJp }})
-2. Create \`{{ outputDir }}/{{ date }}_logbook.md\` (append or update if it exists)
-3. Report the created filename
-
-## Guidelines
-
-- Do not overwrite existing files; append or update instead
-- Keep the logbook concise and focused on key points
-- Prioritize discussion highlights, decisions made, and next actions
-- Output language is template-driven (this default template uses English)
-- Clearly separate facts from opinions (speculation/evaluation)
-
-## Usage
-{{ usage }}`;
+// src/domain/masking.ts
 var SECRET_PATTERNS = [
   /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
   /\b[sS][kK]-[A-Za-z0-9_-]{8,}\b/g,
@@ -48,6 +16,9 @@ var SECRET_PATTERNS = [
   /\beyJ[A-Za-z0-9_-]{10,120}\.[A-Za-z0-9_-]{10,120}\.[A-Za-z0-9_-]{10,120}\b/g,
   /(?:password|passwd|pwd|secret|client[_-]?secret|api[_-]?key|apikey|access[_-]?token|refresh[_-]?token)\s*[:=]\s*\S+/gi
 ];
+function isRedactEnabled() {
+  return process.env.OPENCODE_DAILY_LOGBOOK_REDACT !== "false";
+}
 function maskSecrets(value) {
   let masked = value;
   for (const pattern of SECRET_PATTERNS) {
@@ -55,75 +26,78 @@ function maskSecrets(value) {
   }
   return masked;
 }
-function createV1LogSink(client) {
-  return {
-    warn: async (message) => {
-      try {
-        await client.app.log({ body: { service: SERVICE_NAME, level: "warn", message } });
-      } catch {}
-    },
-    error: async (message, error) => {
-      const errorMessage = error instanceof Error ? error.message : String(error ?? "");
-      const fullMessage = errorMessage ? `${message}: ${errorMessage}` : message;
-      try {
-        await client.app.log({ body: { service: SERVICE_NAME, level: "error", message: fullMessage } });
-      } catch {}
-    },
-    info: async (message) => {
-      try {
-        await client.app.log({ body: { service: SERVICE_NAME, level: "info", message } });
-      } catch {}
-    }
-  };
+
+// src/domain/transcript.ts
+var TRANSCRIPT_MAX_MESSAGES = 80;
+var TRANSCRIPT_MAX_CHARS = 12000;
+function truncateText(value, maxChars) {
+  if (value.length <= maxChars)
+    return value;
+  return `${value.slice(0, maxChars)}
+...(truncated)`;
 }
-function createV2LogSink() {
-  return {
-    warn: (message) => {
-      console.warn(`[${SERVICE_NAME}] ${message}`);
-    },
-    error: (message, error) => {
-      const errorMessage = error instanceof Error ? error.message : error !== undefined ? String(error) : "";
-      const fullMessage = errorMessage ? `${message}: ${errorMessage}` : message;
-      console.error(`[${SERVICE_NAME}] ${fullMessage}`);
-    },
-    info: (message) => {
-      console.log(`[${SERVICE_NAME}] ${message}`);
-    }
-  };
+function extractReadableText(part) {
+  if (part.type === "text" && typeof part.text === "string")
+    return part.text;
+  return "";
 }
-function isPluginDisabled() {
-  return process.env.OPENCODE_DAILY_LOGBOOK_DISABLED === "true";
+function buildTranscript(messages) {
+  const recentMessages = messages.slice(-TRANSCRIPT_MAX_MESSAGES);
+  const transcriptLines = recentMessages.map(({ info, parts }) => {
+    const roleLabel = info.role === "user" ? "User" : "Assistant";
+    const text = parts.map((part) => extractReadableText(part)).join(`
+`).trim();
+    if (!text)
+      return "";
+    return `[${roleLabel}]
+${text}`;
+  }).filter((line) => line.length > 0).join(`
+
+`);
+  if (!transcriptLines)
+    return "(No summarizable text history found in the source session)";
+  const maskedTranscript = isRedactEnabled() ? maskSecrets(transcriptLines) : transcriptLines;
+  return truncateText(maskedTranscript, TRANSCRIPT_MAX_CHARS);
 }
-function isRedactEnabled() {
-  return process.env.OPENCODE_DAILY_LOGBOOK_REDACT !== "false";
+
+// src/domain/formatting.ts
+function formatCost(value) {
+  return `$${value.toFixed(2)}`;
 }
-function isTranscriptIncluded() {
-  return process.env.OPENCODE_DAILY_LOGBOOK_INCLUDE_TRANSCRIPT !== "false";
+function formatTokens(value) {
+  if (value >= 1e9)
+    return `${(value / 1e9).toFixed(1)}B`;
+  if (value >= 1e6)
+    return `${(value / 1e6).toFixed(1)}M`;
+  if (value >= 1000)
+    return `${(value / 1000).toFixed(1)}K`;
+  return `${value}`;
 }
-function isDailyLimitEnabled() {
-  return process.env.OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT === "true";
+function formatUsageTable(stats, date, projectDisplayName) {
+  if (!stats)
+    return "";
+  const displayDate = date.length === 8 ? `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}` : date;
+  const heading = projectDisplayName ? `## Usage \u2014 ${displayDate} (project: ${projectDisplayName})` : `## Usage \u2014 ${displayDate}`;
+  const hasSessionCost = stats.sessionCost !== null && stats.sessionCost !== undefined;
+  const costLabel = hasSessionCost ? "Cost (\u672C\u65E5/\u30BB\u30C3\u30B7\u30E7\u30F3)" : "Cost (\u672C\u65E5)";
+  const costValue = hasSessionCost ? `${formatCost(stats.dayCost)} / ${formatCost(stats.sessionCost)}` : formatCost(stats.dayCost);
+  const tokensValue = `${formatTokens(stats.tokensInput)} / ${formatTokens(stats.tokensOutput)} / ${formatTokens(stats.cacheRead)}`;
+  return `${heading}
+| \u9805\u76EE | \u5024 |
+|---|---|
+| ${costLabel} | ${costValue} |
+| Tokens Input / Output / Cache Read | ${tokensValue} |
+| Sessions (\u672C\u65E5) | ${stats.sessionsToday} |
+| Total Cost (\u7D2F\u8A08) | ${formatCost(stats.totalCost)} |`;
 }
-function getThrottleWindowMs() {
-  const rawValue = process.env.OPENCODE_DAILY_LOGBOOK_THROTTLE_MS;
-  if (rawValue === undefined || rawValue === "") {
-    return DUPLICATE_WINDOW_MS;
-  }
-  const parsedMs = Number.parseInt(rawValue, 10);
-  if (Number.isNaN(parsedMs) || parsedMs < 0) {
-    return DUPLICATE_WINDOW_MS;
-  }
-  return parsedMs;
-}
-function isUsageProjectOnly() {
-  return process.env.OPENCODE_DAILY_LOGBOOK_USAGE_PROJECT_ONLY !== "false";
-}
-function getDbPath() {
-  const custom = process.env.OPENCODE_DAILY_LOGBOOK_DB_PATH;
-  if (custom && custom.trim() !== "") {
-    return custom;
-  }
-  return join(homedir(), ".local/share/opencode/opencode.db");
-}
+
+// src/infrastructure/usage/getUsageStats.ts
+import { existsSync } from "fs";
+import { homedir } from "os";
+import { join, resolve } from "path";
+import { Database } from "bun:sqlite";
+
+// src/infrastructure/usage/resolveProjectId.ts
 function resolveProjectId(db, normalizedDir) {
   try {
     const stmt = db.prepare("SELECT id FROM project WHERE worktree = ?");
@@ -135,6 +109,8 @@ function resolveProjectId(db, normalizedDir) {
     return null;
   }
 }
+
+// src/infrastructure/usage/queryDailyStats.ts
 function toYyyyMmDd(date) {
   if (date.length === 8) {
     return `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}`;
@@ -170,6 +146,18 @@ function querySessionCost(db, sessionId) {
     return null;
   }
 }
+
+// src/infrastructure/usage/getUsageStats.ts
+function getDbPath() {
+  const custom = process.env.OPENCODE_DAILY_LOGBOOK_DB_PATH;
+  if (custom && custom.trim() !== "") {
+    return custom;
+  }
+  return join(homedir(), ".local/share/opencode/opencode.db");
+}
+function isUsageProjectOnly() {
+  return process.env.OPENCODE_DAILY_LOGBOOK_USAGE_PROJECT_ONLY !== "false";
+}
 function getUsageStats(params) {
   const dbPath = params.dbPath ?? getDbPath();
   if (!existsSync(dbPath))
@@ -200,42 +188,108 @@ function getUsageStats(params) {
     } catch {}
   }
 }
-function formatCost(value) {
-  return `$${value.toFixed(2)}`;
+
+// src/application/guards.ts
+import { existsSync as existsSync2 } from "fs";
+import { resolve as resolve2 } from "path";
+function isWithinWindow(lastTriggeredAt, nowMs, windowMs) {
+  if (lastTriggeredAt === undefined)
+    return false;
+  return nowMs - lastTriggeredAt < windowMs;
 }
-function formatTokens(value) {
-  if (value >= 1e9)
-    return `${(value / 1e9).toFixed(1)}B`;
-  if (value >= 1e6)
-    return `${(value / 1e6).toFixed(1)}M`;
-  if (value >= 1000)
-    return `${(value / 1000).toFixed(1)}K`;
-  return `${value}`;
+function isDailyLogbookExists(directory, outputDir, date) {
+  const p = resolve2(directory, outputDir, `${date}_logbook.md`);
+  return existsSync2(p);
 }
-function formatUsageTable(stats, date, projectDisplayName) {
-  if (!stats)
-    return "";
-  const displayDate = date.length === 8 ? `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}` : date;
-  const heading = projectDisplayName ? `## Usage \u2014 ${displayDate} (project: ${projectDisplayName})` : `## Usage \u2014 ${displayDate}`;
-  const hasSessionCost = stats.sessionCost !== null && stats.sessionCost !== undefined;
-  const costLabel = hasSessionCost ? "Cost (\u672C\u65E5/\u30BB\u30C3\u30B7\u30E7\u30F3)" : "Cost (\u672C\u65E5)";
-  const costValue = hasSessionCost ? `${formatCost(stats.dayCost)} / ${formatCost(stats.sessionCost)}` : formatCost(stats.dayCost);
-  const tokensValue = `${formatTokens(stats.tokensInput)} / ${formatTokens(stats.tokensOutput)} / ${formatTokens(stats.cacheRead)}`;
-  return `${heading}
-| \u9805\u76EE | \u5024 |
-|---|---|
-| ${costLabel} | ${costValue} |
-| Tokens Input / Output / Cache Read | ${tokensValue} |
-| Sessions (\u672C\u65E5) | ${stats.sessionsToday} |
-| Total Cost (\u7D2F\u8A08) | ${formatCost(stats.totalCost)} |`;
+function isDuplicateTrigger(sessionId, nowMs, windowMs, recentMap) {
+  return isWithinWindow(recentMap.get(sessionId), nowMs, windowMs);
 }
+function pruneExpiredGuards(nowMs, windowMs, recentMap) {
+  for (const [sid, ts] of recentMap.entries()) {
+    if (nowMs - ts >= windowMs * 2)
+      recentMap.delete(sid);
+  }
+}
+function isThrottled(sessionId, nowMs, windowMs, inFlight, recentMap) {
+  return inFlight.has(sessionId) || isDuplicateTrigger(sessionId, nowMs, windowMs, recentMap);
+}
+function isDailyLimitedInFlight(date, isDailyLimited, inFlightDates) {
+  return isDailyLimited && inFlightDates.has(date);
+}
+function getDailyFileAction(isDailyLimited, directory, outputDir, date) {
+  if (!isDailyLimited)
+    return "continue";
+  if (process.env.OPENCODE_DAILY_LOGBOOK_TEMPLATE)
+    return "warnCustom";
+  if (isDailyLogbookExists(directory, outputDir, date))
+    return "skip";
+  return "continue";
+}
+function handleDailyFileAction(action, sink, date) {
+  if (action === "warnCustom") {
+    sink.warn("OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT is not supported together with OPENCODE_DAILY_LOGBOOK_TEMPLATE (file name pattern is unknown). Daily limit check is skipped.");
+    return false;
+  }
+  if (action === "skip") {
+    sink.warn(`Daily logbook for ${date} already exists. Skipping generation (OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT=true).`);
+    return true;
+  }
+  return false;
+}
+
+// src/application/config.ts
+var DEFAULT_OUTPUT_DIR = "artifacts/daily";
+var DUPLICATE_WINDOW_MS = 90000;
+function getOutputDir() {
+  return process.env.OPENCODE_DAILY_LOGBOOK_OUTPUT_DIR || DEFAULT_OUTPUT_DIR;
+}
+function isPluginDisabled() {
+  return process.env.OPENCODE_DAILY_LOGBOOK_DISABLED === "true";
+}
+function isTranscriptIncluded() {
+  return process.env.OPENCODE_DAILY_LOGBOOK_INCLUDE_TRANSCRIPT !== "false";
+}
+function isDailyLimitEnabled() {
+  return process.env.OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT === "true";
+}
+function getThrottleWindowMs() {
+  const raw = process.env.OPENCODE_DAILY_LOGBOOK_THROTTLE_MS;
+  if (raw === undefined || raw === "")
+    return DUPLICATE_WINDOW_MS;
+  const parsed = Number.parseInt(raw, 10);
+  if (Number.isNaN(parsed) || parsed < 0)
+    return DUPLICATE_WINDOW_MS;
+  return parsed;
+}
+
+// src/application/template-loader.ts
+import { readFileSync } from "fs";
+import { resolve as resolve3 } from "path";
+var SAMPLE_TEMPLATE = `Create a daily logbook based on the session {{ sessionId }}.
+
+## Steps
+
+1. Check today's date ({{ dateJp }})
+2. Create \`{{ outputDir }}/{{ date }}_logbook.md\` (append or update if it exists)
+3. Report the created filename
+
+## Guidelines
+
+- Do not overwrite existing files; append or update instead
+- Keep the logbook concise and focused on key points
+- Prioritize discussion highlights, decisions made, and next actions
+- Output language is template-driven (this default template uses English)
+- Clearly separate facts from opinions (speculation/evaluation)
+
+## Usage
+{{ usage }}`;
 function formatDateTokens(now) {
-  const year = now.getFullYear();
-  const month = now.getMonth() + 1;
-  const day = now.getDate();
+  const y = now.getFullYear();
+  const m = now.getMonth() + 1;
+  const d = now.getDate();
   return {
-    date: `${year}${String(month).padStart(2, "0")}${String(day).padStart(2, "0")}`,
-    dateJp: `${year}\u5E74${month}\u6708${day}\u65E5`
+    date: `${y}${String(m).padStart(2, "0")}${String(d).padStart(2, "0")}`,
+    dateJp: `${y}\u5E74${m}\u6708${d}\u65E5`
   };
 }
 function replaceTemplateVariables(template, sessionId, now, outputDir, usageTable) {
@@ -243,86 +297,76 @@ function replaceTemplateVariables(template, sessionId, now, outputDir, usageTabl
   return template.replace(/\{\{\s*sessionId\s*\}\}/g, () => sessionId).replace(/\{\{\s*date\s*\}\}/g, () => date).replace(/\{\{\s*dateJp\s*\}\}/g, () => dateJp).replace(/\{\{\s*outputDir\s*\}\}/g, () => outputDir).replace(/\{\{\s*usage\s*\}\}/g, () => usageTable ?? "").replace(/\{\{\s*usageTable\s*\}\}/g, () => usageTable ?? "");
 }
 function loadTemplate(directory) {
-  const customTemplatePath = process.env.OPENCODE_DAILY_LOGBOOK_TEMPLATE;
-  if (!customTemplatePath)
+  const custom = process.env.OPENCODE_DAILY_LOGBOOK_TEMPLATE;
+  if (!custom)
     return SAMPLE_TEMPLATE;
-  const resolvedTemplatePath = resolve(directory, customTemplatePath);
-  return readFileSync(resolvedTemplatePath, "utf-8");
-}
-function truncateText(value, maxChars) {
-  if (value.length <= maxChars)
-    return value;
-  return `${value.slice(0, maxChars)}
-...(truncated)`;
-}
-function extractReadableText(part) {
-  if (part.type === "text" && typeof part.text === "string")
-    return part.text;
-  return "";
-}
-function buildTranscript(messages) {
-  const recentMessages = messages.slice(-TRANSCRIPT_MAX_MESSAGES);
-  const transcriptLines = recentMessages.map(({ info, parts }) => {
-    const roleLabel = info.role === "user" ? "User" : "Assistant";
-    const text = parts.map((part) => extractReadableText(part)).join(`
-`).trim();
-    if (!text)
-      return "";
-    return `[${roleLabel}]
-${text}`;
-  }).filter((line) => line.length > 0).join(`
-
-`);
-  if (!transcriptLines)
-    return "(No summarizable text history found in the source session)";
-  const maskedTranscript = isRedactEnabled() ? maskSecrets(transcriptLines) : transcriptLines;
-  return truncateText(maskedTranscript, TRANSCRIPT_MAX_CHARS);
+  const resolved = resolve3(directory, custom);
+  return readFileSync(resolved, "utf-8");
 }
 function buildPrompt(template, sessionId, transcript, includeTranscript, outputDir, now, usageTable) {
-  const replacedTemplate = replaceTemplateVariables(template, sessionId, now, outputDir, usageTable);
-  let basePrompt;
-  if (!includeTranscript || !transcript) {
-    basePrompt = replacedTemplate;
-  } else {
-    basePrompt = `${replacedTemplate}
+  const replaced = replaceTemplateVariables(template, sessionId, now, outputDir, usageTable);
+  if (!includeTranscript || !transcript)
+    return replaced;
+  return `${replaced}
 
 ---
 Below is an excerpt of the session ${sessionId} history. Create the daily logbook based on this history.
 
 ${transcript}`;
-  }
-  return basePrompt;
 }
-function isWithinWindow(lastTriggeredAt, nowMs, windowMs) {
-  if (lastTriggeredAt === undefined)
-    return false;
-  return nowMs - lastTriggeredAt < windowMs;
+
+// src/application/generate-logbook.usecase.ts
+var GENERATED_TITLE_PREFIX = "[daily-logbook:auto]";
+var inFlightSessionIds = new Set;
+var dailyLimitInFlightByDate = new Set;
+var recentlyTriggeredAtBySessionId = new Map;
+function resetForTest() {
+  inFlightSessionIds.clear();
+  dailyLimitInFlightByDate.clear();
+  recentlyTriggeredAtBySessionId.clear();
 }
-function isDuplicateTrigger(sessionId, nowMs, windowMs) {
-  return isWithinWindow(recentlyTriggeredAtBySessionId.get(sessionId), nowMs, windowMs);
-}
-function pruneExpiredGuards(nowMs, windowMs) {
-  for (const [sessionId, timestamp] of recentlyTriggeredAtBySessionId.entries()) {
-    if (nowMs - timestamp >= windowMs * 2) {
-      recentlyTriggeredAtBySessionId.delete(sessionId);
-    }
-  }
-}
-function isDailyLogbookExists(directory, outputDir, date) {
-  const dailyLogbookPath = resolve(directory, outputDir, `${date}_logbook.md`);
-  return existsSync(dailyLogbookPath);
+var __resetGlobalStateForTest = resetForTest;
+var usagePort = {
+  getUsageStats,
+  isUsageProjectOnly,
+  formatUsageTable
+};
+var transcriptPort = {
+  buildTranscript,
+  isTranscriptIncluded
+};
+var configPort = {
+  getOutputDir,
+  isPluginDisabled,
+  isDailyLimitEnabled,
+  getThrottleWindowMs
+};
+var templatePort = {
+  loadTemplate,
+  sampleTemplate: SAMPLE_TEMPLATE
+};
+function formatDateTokens2(now) {
+  const y = now.getFullYear();
+  const m = now.getMonth() + 1;
+  const d = now.getDate();
+  return { date: `${y}${String(m).padStart(2, "0")}${String(d).padStart(2, "0")}` };
 }
 function resolveUsageTable(directory, sessionId, date) {
-  const stats = getUsageStats({ directory, sessionId, date, projectOnly: isUsageProjectOnly() });
+  const stats = usagePort.getUsageStats({
+    directory,
+    sessionId,
+    date,
+    projectOnly: usagePort.isUsageProjectOnly()
+  });
   if (!stats)
     return;
-  const projectDisplayName = basename(resolve(directory));
+  const projectDisplayName = basename(resolve4(directory));
   const displayDate = `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}`;
-  const table = formatUsageTable(stats, displayDate, projectDisplayName);
+  const table = usagePort.formatUsageTable(stats, displayDate, projectDisplayName);
   return table || undefined;
 }
 function resolveTemplate(directory) {
-  return loadTemplate(directory);
+  return templatePort.loadTemplate(directory);
 }
 function parseSourceResult(result) {
   const typed = result;
@@ -350,50 +394,25 @@ function parseCreateResult(result) {
     return { error: "missing session id" };
   return { id };
 }
-function isThrottled(sessionId, nowMs, windowMs) {
-  return inFlightSessionIds.has(sessionId) || isDuplicateTrigger(sessionId, nowMs, windowMs);
-}
-function isDailyLimitedInFlight(date, isDailyLimited) {
-  return isDailyLimited && dailyLimitInFlightByDate.has(date);
-}
-function getDailyFileAction(isDailyLimited, directory, outputDir, date) {
-  if (!isDailyLimited)
-    return "continue";
-  if (process.env.OPENCODE_DAILY_LOGBOOK_TEMPLATE)
-    return "warnCustom";
-  if (isDailyLogbookExists(directory, outputDir, date))
-    return "skip";
-  return "continue";
-}
 function buildTranscriptFromData(data) {
-  return isTranscriptIncluded() ? buildTranscript(data) : "";
-}
-function handleDailyFileAction(action, sink, date) {
-  if (action === "warnCustom") {
-    sink.warn("OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT is not supported together with OPENCODE_DAILY_LOGBOOK_TEMPLATE (file name pattern is unknown). Daily limit check is skipped.");
-    return false;
-  }
-  if (action === "skip") {
-    sink.warn(`Daily logbook for ${date} already exists. Skipping generation (OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT=true).`);
-    return true;
-  }
-  return false;
+  return transcriptPort.isTranscriptIncluded() ? transcriptPort.buildTranscript(data) : "";
 }
 function getUsageAndTemplate(directory, sessionId, date, sink) {
   let usageTable;
   try {
     usageTable = resolveUsageTable(directory, sessionId, date);
   } catch (error) {
-    sink.warn(`Failed to get usage stats: ${error instanceof Error ? error.message : String(error)}`);
+    const msg = error instanceof Error ? error.message : String(error);
+    sink.warn(`Failed to get usage stats: ${msg}`);
   }
   let template;
   try {
     template = resolveTemplate(directory);
   } catch (error) {
-    const customTemplatePath = process.env.OPENCODE_DAILY_LOGBOOK_TEMPLATE;
-    sink.warn(`Template load failed (${customTemplatePath ?? "unknown"}). Fallback to SAMPLE_TEMPLATE.`);
+    const custom = process.env.OPENCODE_DAILY_LOGBOOK_TEMPLATE;
+    sink.warn(`Template load failed (${custom ?? "unknown"}). Fallback to SAMPLE_TEMPLATE.`);
     sink.error("Template load error", error);
-    template = SAMPLE_TEMPLATE;
+    template = templatePort.sampleTemplate;
   }
   return { usageTable, template };
 }
@@ -427,19 +446,67 @@ function shouldAbortPrompt(result, sink) {
   }
   return false;
 }
+async function fetchSourceSession(adapter, sessionId, sink) {
+  let getResult;
+  try {
+    getResult = await adapter.get(sessionId);
+  } catch (error) {
+    getResult = { error };
+  }
+  const parsed = parseSourceResult(getResult);
+  if (shouldAbortSource(parsed, sink))
+    return { aborted: true };
+  return { aborted: false };
+}
+async function fetchMessages(adapter, sessionId, sink) {
+  let msgResult;
+  try {
+    msgResult = await adapter.getMessages(sessionId);
+  } catch (error) {
+    msgResult = { error };
+  }
+  const parsed = parseMessagesResult(msgResult);
+  if (shouldAbortMessages(parsed, sink))
+    return { aborted: true, data: [] };
+  return { aborted: false, data: parsed.data };
+}
+async function createGeneratedSession(adapter, date, sink) {
+  let createResult;
+  try {
+    createResult = await adapter.create(`${GENERATED_TITLE_PREFIX} ${date}`);
+  } catch (error) {
+    createResult = { error };
+  }
+  const parsed = parseCreateResult(createResult);
+  if (shouldAbortCreate(parsed, sink))
+    return { aborted: true };
+  return { aborted: false, id: parsed.id };
+}
+async function sendPrompt(adapter, generatedId, prompt, sink) {
+  let promptResult;
+  try {
+    promptResult = await adapter.prompt(generatedId, prompt);
+  } catch (error) {
+    promptResult = { error };
+  }
+  const typed = promptResult;
+  if (shouldAbortPrompt(typed, sink))
+    return { aborted: true };
+  return { aborted: false };
+}
 async function generateDailyLogbookCore(params) {
-  if (isPluginDisabled())
+  if (configPort.isPluginDisabled())
     return;
   const nowMs = Date.now();
-  const throttleWindowMs = getThrottleWindowMs();
-  pruneExpiredGuards(nowMs, throttleWindowMs);
-  if (isThrottled(params.sessionId, nowMs, throttleWindowMs))
+  const throttleWindowMs = configPort.getThrottleWindowMs();
+  pruneExpiredGuards(nowMs, throttleWindowMs, recentlyTriggeredAtBySessionId);
+  if (isThrottled(params.sessionId, nowMs, throttleWindowMs, inFlightSessionIds, recentlyTriggeredAtBySessionId))
     return;
   const now = new Date;
-  const { date } = formatDateTokens(now);
-  const outputDir = getOutputDir();
-  const isDailyLimited = isDailyLimitEnabled();
-  if (isDailyLimitedInFlight(date, isDailyLimited)) {
+  const { date } = formatDateTokens2(now);
+  const outputDir = configPort.getOutputDir();
+  const isDailyLimited = configPort.isDailyLimitEnabled();
+  if (isDailyLimitedInFlight(date, isDailyLimited, dailyLimitInFlightByDate)) {
     await params.sink.warn(`Daily logbook for ${date} is already being generated. Skipping (OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT=true).`);
     return;
   }
@@ -447,57 +514,26 @@ async function generateDailyLogbookCore(params) {
   if (isDailyLimited)
     dailyLimitInFlightByDate.add(date);
   try {
-    {
-      let getResult;
-      try {
-        getResult = await params.adapter.get(params.sessionId);
-      } catch (error) {
-        getResult = { error };
-      }
-      const parsed = parseSourceResult(getResult);
-      if (shouldAbortSource(parsed, params.sink))
-        return;
-    }
-    {
-      const action = getDailyFileAction(isDailyLimited, params.directory, outputDir, date);
-      if (handleDailyFileAction(action, params.sink, date))
-        return;
-    }
+    const source = await fetchSourceSession(params.adapter, params.sessionId, params.sink);
+    if (source.aborted)
+      return;
+    const action = getDailyFileAction(isDailyLimited, params.directory, outputDir, date);
+    if (handleDailyFileAction(action, params.sink, date))
+      return;
     const { usageTable, template } = getUsageAndTemplate(params.directory, params.sessionId, date, params.sink);
-    let msgResult;
-    try {
-      msgResult = await params.adapter.getMessages(params.sessionId);
-    } catch (error) {
-      msgResult = { error };
-    }
-    const parsedMsg = parseMessagesResult(msgResult);
-    if (shouldAbortMessages(parsedMsg, params.sink))
+    const msg = await fetchMessages(params.adapter, params.sessionId, params.sink);
+    if (msg.aborted)
       return;
-    const transcript = buildTranscriptFromData(parsedMsg.data);
-    const includeTranscript = isTranscriptIncluded();
-    const promptOutputDir = isDailyLimited ? resolve(params.directory, outputDir) : outputDir;
+    const transcript = buildTranscriptFromData(msg.data);
+    const includeTranscript = transcriptPort.isTranscriptIncluded();
+    const promptOutputDir = isDailyLimited ? resolve4(params.directory, outputDir) : outputDir;
     const prompt = buildPrompt(template, params.sessionId, transcript, includeTranscript, promptOutputDir, now, usageTable);
-    let createResult;
-    try {
-      createResult = await params.adapter.create(`${GENERATED_TITLE_PREFIX} ${date}`);
-    } catch (error) {
-      createResult = { error };
-    }
-    const parsedCreate = parseCreateResult(createResult);
-    if (shouldAbortCreate(parsedCreate, params.sink))
+    const created = await createGeneratedSession(params.adapter, date, params.sink);
+    if (created.aborted || !created.id)
       return;
-    const generatedId = parsedCreate.id;
-    {
-      let promptResult;
-      try {
-        promptResult = await params.adapter.prompt(generatedId, prompt);
-      } catch (error) {
-        promptResult = { error };
-      }
-      const typed = promptResult;
-      if (shouldAbortPrompt(typed, params.sink))
-        return;
-    }
+    const sent = await sendPrompt(params.adapter, created.id, prompt, params.sink);
+    if (sent.aborted)
+      return;
     recentlyTriggeredAtBySessionId.set(params.sessionId, nowMs);
   } catch (error) {
     await params.sink.error("Unhandled error while generating daily logbook", error);
@@ -507,122 +543,104 @@ async function generateDailyLogbookCore(params) {
       dailyLimitInFlightByDate.delete(date);
   }
 }
+
+// src/adapters/v1/log-sink.v1.ts
+var SERVICE_NAME = "daily-logbook-plugin";
+function createV1LogSink(client) {
+  return {
+    warn: async (message) => {
+      try {
+        await client.app.log({ body: { service: SERVICE_NAME, level: "warn", message } });
+      } catch {}
+    },
+    error: async (message, error) => {
+      const msg = error instanceof Error ? error.message : String(error ?? "");
+      const full = msg ? `${message}: ${msg}` : message;
+      try {
+        await client.app.log({ body: { service: SERVICE_NAME, level: "error", message: full } });
+      } catch {}
+    },
+    info: async (message) => {
+      try {
+        await client.app.log({ body: { service: SERVICE_NAME, level: "info", message } });
+      } catch {}
+    }
+  };
+}
+
+// src/adapters/v1/session.v1.ts
+function createV1SessionPort(client) {
+  return {
+    get: (id) => client.session.get({ path: { id } }),
+    getMessages: (id) => client.session.messages({ path: { id } }),
+    create: (title) => client.session.create({ body: { title } }),
+    prompt: (id, text) => client.session.promptAsync({
+      path: { id },
+      body: { parts: [{ type: "text", text }] }
+    })
+  };
+}
+
+// src/adapters/v1/plugin.v1.ts
+var SERVICE_NAME2 = "daily-logbook-plugin";
 var DailyLogbookPlugin = async ({ client, directory }) => {
   await client.app.log({
-    body: {
-      service: SERVICE_NAME,
-      level: "info",
-      message: "daily-logbook plugin loaded"
-    }
+    body: { service: SERVICE_NAME2, level: "info", message: "daily-logbook plugin loaded" }
   });
   return {
     event: async ({ event }) => {
       if (event.type !== "session.idle")
         return;
       const sink = createV1LogSink(client);
-      const adapter = {
-        get: (id) => client.session.get({ path: { id } }),
-        getMessages: (id) => client.session.messages({ path: { id } }),
-        create: (title) => client.session.create({ body: { title } }),
-        prompt: (id, text) => client.session.promptAsync({ path: { id }, body: { parts: [{ type: "text", text }] } })
-      };
-      await generateDailyLogbookCore({ sessionId: event.properties.sessionID, directory, sink, adapter });
+      const adapter = createV1SessionPort(client);
+      await generateDailyLogbookCore({
+        sessionId: event.properties.sessionID,
+        directory,
+        sink,
+        adapter
+      });
     }
   };
 };
-async function handleV2IdleEvent(params) {
-  const adapter = {
-    get: (id) => params.session.get({ sessionID: id }),
-    getMessages: async (id) => {
-      if (params.session.context)
-        return params.session.context({ sessionID: id });
-      if (params.session.messages)
-        return params.session.messages({ path: { id } });
-      return { error: new Error("no messages method available") };
+// src/adapters/v2/log-sink.v2.ts
+var SERVICE_NAME3 = "daily-logbook-plugin";
+function createV2LogSink() {
+  return {
+    warn: (message) => {
+      console.warn(`[${SERVICE_NAME3}] ${message}`);
     },
-    create: (title) => params.session.create({ title }),
-    prompt: async (id, text) => {
-      if (params.session.prompt)
-        return params.session.prompt({ sessionID: id, text });
-      if (params.session.generate)
-        return params.session.generate({ sessionID: id, text });
-      if (params.session.promptAsync)
-        return params.session.promptAsync({ path: { id }, body: { parts: [{ type: "text", text }] } });
-      return { error: new Error("no prompt method available on session") };
+    error: (message, error) => {
+      const msg = error instanceof Error ? error.message : error !== undefined ? String(error) : "";
+      const full = msg ? `${message}: ${msg}` : message;
+      console.error(`[${SERVICE_NAME3}] ${full}`);
+    },
+    info: (message) => {
+      console.log(`[${SERVICE_NAME3}] ${message}`);
     }
   };
-  await generateDailyLogbookCore({ sessionId: params.sessionID, directory: params.directory, sink: params.sink, adapter });
 }
-async function v2Setup(ctx) {
-  const anyCtx = ctx;
-  const directory = anyCtx.location?.directory ?? anyCtx.directory ?? anyCtx.worktree ?? process.cwd();
-  const sink = createV2LogSink();
-  const ctxKeys = (() => {
-    try {
-      return Object.keys(anyCtx).sort().join(",");
-    } catch {
-      return "unknown";
-    }
-  })();
-  const hasEventSubscribe = typeof anyCtx.event?.subscribe === "function";
-  const hasClientEventSubscribe = typeof anyCtx.client?.event?.subscribe === "function";
-  const hasSession = !!anyCtx.session;
-  const isV1Host = (() => {
-    try {
-      return ctxKeys.includes("agent") && ctxKeys.includes("skill") && !hasEventSubscribe && !hasSession;
-    } catch {
-      return false;
-    }
-  })();
-  await sink.info?.(`daily-logbook plugin loaded (v2) app=${anyCtx.app?.name ?? "unknown"} ${anyCtx.app?.version ?? ""} ctxKeys=[${ctxKeys}] event.subscribe=${hasEventSubscribe ? "yes" : "no"} client.event.subscribe=${hasClientEventSubscribe ? "yes" : "no"} session=${hasSession ? "yes" : "no"}${isV1Host ? " [V1 host detected via Orca shared \u2014 delegating to V1]" : ""}`);
-  if (isV1Host) {
-    await sink.warn("v2Setup called on V1 host (ctxKeys without event/session). This is Orca shared's plugins being loaded by opencode 1.18.x. Daily-logbook will be handled by V1 DailyLogbookPlugin, not v2. Skipping v2 event setup.");
-    return;
-  }
-  const eventHost = anyCtx.event ?? anyCtx.client?.event;
-  if (eventHost?.subscribe) {
-    const controller = new AbortController;
-    const session = anyCtx.session ?? await createFallbackSessionAdapter(sink, anyCtx.serverUrl);
-    if (!session) {
-      await sink.warn("v2: no session adapter available (ctx.session missing and fallback failed); idle handling disabled");
-      return;
-    }
-    runV2EventLoop({ event: eventHost, session }, sink, directory, controller);
-    return () => controller.abort();
-  }
-  const sdkFallback = await createFallbackSdkClient(sink);
-  if (sdkFallback) {
-    const controller = new AbortController;
-    const sdkEventHost = sdkFallback.client.event;
-    if (sdkEventHost?.subscribe) {
-      await sink.info?.(`v2: using SDK fallback for event subscription via ${sdkFallback.url}`);
-      const fileSession = await createFallbackSessionAdapter(sink, null);
-      if (!fileSession) {
-        await sink.warn("v2: SDK event fallback has no file session; idle handling disabled");
-        return;
-      }
-      runV2EventLoop({ event: sdkEventHost, session: fileSession }, sink, directory, controller);
-      return () => controller.abort();
-    }
-  }
-  await sink.warn("v2: ctx.event.subscribe not found (ctxKeys=[" + ctxKeys + "]); falling back to return {event} hook. If idle is still not delivered, use opencode (v1) with 2.0.3.");
-  const fallbackSession = anyCtx.session ?? await createFallbackSessionAdapter(sink, anyCtx.serverUrl);
-  if (!fallbackSession) {
-    await sink.warn("v2: no session adapter for fallback hook; idle handling disabled");
-    return;
-  }
+
+// src/adapters/v2/session.v2.ts
+function toSessionPort(session) {
   return {
-    event: async ({ event }) => {
-      if (event.type !== "session.idle")
-        return;
-      const data = event.data;
-      const properties = event.properties;
-      const sessionID = data?.sessionID ?? properties?.sessionID;
-      if (!sessionID) {
-        await sink.warn("session.idle event missing sessionID; skipping");
-        return;
+    get: (id) => session.get({ sessionID: id }),
+    getMessages: async (id) => {
+      if (session.context)
+        return session.context({ sessionID: id });
+      if (session.messages)
+        return session.messages({ path: { id } });
+      return { error: new Error("no messages method available") };
+    },
+    create: (title) => session.create({ title }),
+    prompt: async (id, text) => {
+      if (session.prompt)
+        return session.prompt({ sessionID: id, text });
+      if (session.generate)
+        return session.generate({ sessionID: id, text });
+      if (session.promptAsync) {
+        return session.promptAsync({ path: { id }, body: { parts: [{ type: "text", text }] } });
       }
-      await handleV2IdleEvent({ sessionID, directory, sink, session: fallbackSession });
+      return { error: new Error("no prompt method available on session") };
     }
   };
 }
@@ -633,68 +651,35 @@ async function createFallbackSessionAdapter(sink, _serverUrl) {
     context: async () => ({ data: [] }),
     create: async (input) => ({ data: { id: `fallback-${Date.now()}` }, title: input.title }),
     prompt: async (input) => {
-      try {
-        const match = input.text.match(/Create `([^`]+)`/);
-        const filePath = match ? match[1] : `artifacts/daily/${new Date().toISOString().slice(0, 10).replace(/-/g, "")}_logbook.md`;
-        const { writeFileSync, mkdirSync, existsSync: existsSync2, readFileSync: readFileSync2 } = await import("fs");
-        const { resolve: resolve2, dirname } = await import("path");
-        const absPath = resolve2(process.cwd(), filePath);
-        mkdirSync(dirname(absPath), { recursive: true });
-        const existing = existsSync2(absPath) ? readFileSync2(absPath, "utf-8") : "";
-        const content = `${existing ? existing + `
-
-` : ""}# Daily Logbook ${new Date().toISOString().slice(0, 10)}
-
-${input.text.slice(0, 2000)}
-`;
-        writeFileSync(absPath, content);
-        await sink.info?.(`fallback direct write to ${absPath}`);
-      } catch (error) {
-        await sink.warn(`fallback direct write failed: ${error instanceof Error ? error.message : String(error)}`);
-      }
+      await writeDirectFile(input.text, sink);
       return {};
     }
   };
 }
-async function resolveV2Iterable(subscribe, signal, sink, eventHost) {
-  const sub = subscribe;
-  if (!sub) {
-    await sink.warn("resolveV2Iterable: subscribe is falsy");
-    return;
-  }
-  const host = eventHost ?? {};
+async function writeDirectFile(text, sink) {
   try {
-    const raw = host.subscribe?.call(host, { signal }) ?? sub({ signal });
-    await sink.info?.(`resolveV2Iterable: subscribe({signal}) returned ${raw instanceof Promise ? "Promise" : typeof raw} ${raw && typeof raw === "object" ? `keys=[${Object.keys(raw).join(",")}]` : ""} isAsyncIterable=${isAsyncIterable(raw)}`);
-    const asIterable = await toAsyncIterable(raw, sink, signal);
-    await sink.info?.(`resolveV2Iterable: toAsyncIterable => ${asIterable ? "AsyncIterable" : "undefined"}`);
-    if (asIterable)
-      return asIterable;
-    const raw2 = await trySubscribeEffect(sub, sink, signal, host);
-    if (raw2)
-      return raw2;
+    const match = text.match(/Create `([^`]+)`/);
+    const filePath = match ? match[1] : `artifacts/daily/${new Date().toISOString().slice(0, 10).replace(/-/g, "")}_logbook.md`;
+    const { writeFileSync, mkdirSync, existsSync: existsSync3, readFileSync: readFileSync2 } = await import("fs");
+    const { resolve: resolve5, dirname } = await import("path");
+    const absPath = resolve5(process.cwd(), filePath);
+    mkdirSync(dirname(absPath), { recursive: true });
+    const existing = existsSync3(absPath) ? readFileSync2(absPath, "utf-8") : "";
+    const content = `${existing ? existing + `
+
+` : ""}# Daily Logbook ${new Date().toISOString().slice(0, 10)}
+
+${text.slice(0, 2000)}
+`;
+    writeFileSync(absPath, content);
+    await sink.info?.(`fallback direct write to ${absPath}`);
   } catch (error) {
-    await sink.warn(`resolveV2Iterable: subscribe({signal}) threw ${error instanceof Error ? error.message : String(error)}`);
-    const raw2 = await trySubscribeEffect(sub, sink, signal, host);
-    if (raw2)
-      return raw2;
+    const msg = error instanceof Error ? error.message : String(error);
+    await sink.warn(`fallback direct write failed: ${msg}`);
   }
-  const fallback = await trySubscribeEffect(sub, sink, signal, host);
-  if (!fallback)
-    await sink.warn("resolveV2Iterable: both subscribe styles returned non-AsyncIterable");
-  return fallback;
 }
-async function trySubscribeEffect(sub, _sink, signal, host) {
-  try {
-    const h = host ?? {};
-    const fn = h.subscribe ?? sub;
-    const raw2 = fn.call(h, "session.idle");
-    const asIterable = await toAsyncIterable(raw2, _sink, signal);
-    if (asIterable)
-      return asIterable;
-  } catch {}
-  return;
-}
+
+// src/adapters/v2/event-source.v2.ts
 function isAsyncIterable(value) {
   return !!value && typeof value[Symbol.asyncIterator] === "function";
 }
@@ -711,29 +696,90 @@ async function toAsyncIterable(value, sink, signal) {
     return;
   if (isAsyncIterable(value))
     return value;
-  if (value && typeof value === "object" && "stream" in value) {
-    const stream = value["stream"];
-    if (isAsyncIterable(stream))
-      return stream;
-    const asIterable = await toAsyncIterable(stream, sink, signal);
-    if (asIterable)
-      return asIterable;
-    await sink.warn(`toAsyncIterable: stream property exists but not AsyncIterable (keys=${Object.keys(value).join(",")})`);
-  }
-  if (isEffectStream(value)) {
+  const streamResult = await tryStreamProperty(value, sink, signal);
+  if (streamResult)
+    return streamResult;
+  if (isEffectStream(value))
     return;
-  }
-  if (value instanceof Promise) {
-    try {
-      const resolved = await value;
-      return toAsyncIterable(resolved, sink, signal);
-    } catch {
-      return;
-    }
-  }
+  if (value instanceof Promise)
+    return awaitFromPromise(value, sink, signal);
   return;
 }
-async function createFallbackSdkClient(sink) {
+async function tryStreamProperty(value, sink, signal) {
+  if (!value || typeof value !== "object" || !("stream" in value))
+    return;
+  const stream = value["stream"];
+  if (isAsyncIterable(stream))
+    return stream;
+  const asIterable = await toAsyncIterable(stream, sink, signal);
+  if (asIterable)
+    return asIterable;
+  await sink.warn(`toAsyncIterable: stream property exists but not AsyncIterable (keys=${Object.keys(value).join(",")})`);
+  return;
+}
+async function awaitFromPromise(value, sink, signal) {
+  try {
+    const resolved = await value;
+    return toAsyncIterable(resolved, sink, signal);
+  } catch {
+    return;
+  }
+}
+async function trySubscribeEffect(sub, sink, signal, host) {
+  try {
+    const h = host ?? {};
+    const fn = h.subscribe ?? sub;
+    const raw = fn.call(h, "session.idle");
+    const asIterable = await toAsyncIterable(raw, sink, signal);
+    if (asIterable)
+      return asIterable;
+  } catch {}
+  return;
+}
+async function resolveV2Iterable(subscribe, signal, sink, eventHost) {
+  const sub = subscribe;
+  if (!sub) {
+    await sink.warn("resolveV2Iterable: subscribe is falsy");
+    return;
+  }
+  const host = eventHost ?? {};
+  try {
+    const raw = callSubscribeWithSignal(host, sub, signal, sink);
+    const logged = await logSubscribeResult(raw, sink);
+    const asIterable = await toAsyncIterable(logged, sink, signal);
+    await sink.info?.(`resolveV2Iterable: toAsyncIterable => ${asIterable ? "AsyncIterable" : "undefined"}`);
+    if (asIterable)
+      return asIterable;
+    const viaEffect = await trySubscribeEffect(sub, sink, signal, host);
+    if (viaEffect)
+      return viaEffect;
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    await sink.warn(`resolveV2Iterable: subscribe({signal}) threw ${msg}`);
+    const viaEffect = await trySubscribeEffect(sub, sink, signal, host);
+    if (viaEffect)
+      return viaEffect;
+  }
+  const fallback = await trySubscribeEffect(sub, sink, signal, host);
+  if (!fallback)
+    await sink.warn("resolveV2Iterable: both subscribe styles returned non-AsyncIterable");
+  return fallback;
+}
+function callSubscribeWithSignal(host, sub, signal, _sink) {
+  const hostFn = host.subscribe;
+  if (hostFn)
+    return hostFn.call(host, { signal });
+  return sub({ signal });
+}
+async function logSubscribeResult(raw, sink) {
+  const typeLabel = raw instanceof Promise ? "Promise" : typeof raw;
+  const keys = raw && typeof raw === "object" ? `keys=[${Object.keys(raw).join(",")}]` : "";
+  await sink.info?.(`resolveV2Iterable: subscribe({signal}) returned ${typeLabel} ${keys} isAsyncIterable=${isAsyncIterable(raw)}`);
+  return raw;
+}
+
+// src/adapters/v2/sdk-fallback.ts
+function getCandidateUrls() {
   const candidates = [];
   for (const key of ["OPENCODE_SERVER_URL", "OPENCODE_API_URL", "OPENCODE_SERVER"]) {
     const v = process.env[key];
@@ -745,34 +791,156 @@ async function createFallbackSdkClient(sink) {
   if (envPort)
     candidates.push(`http://localhost:${envPort}`);
   candidates.push("http://localhost:4096", "http://localhost:8080");
-  const unique = [...new Set(candidates)];
-  for (const url of unique) {
-    const sdkSpecs = ["@opencode-ai/sdk/v2", "@opencode-ai/sdk"];
-    for (const spec of sdkSpecs) {
-      try {
-        let createOpencodeClient = null;
-        try {
-          const m = await import(spec).catch(() => null);
-          createOpencodeClient = m?.createOpencodeClient ?? null;
-        } catch {}
-        if (!createOpencodeClient)
-          continue;
-        const client = createOpencodeClient({ baseUrl: url });
-        try {
-          await client.session.list({ limit: 1 });
-          const hasEvent = typeof client.event?.subscribe === "function";
-          if (!hasEvent)
-            throw new Error("no event.subscribe");
-        } catch {
-          continue;
-        }
-        const session = client.session;
-        return { client, session, url };
-      } catch {}
+  return [...new Set(candidates)];
+}
+async function tryCreateForSpec(url, spec) {
+  let createOpencodeClient = null;
+  try {
+    const m = await import(spec).catch(() => null);
+    createOpencodeClient = m?.createOpencodeClient ?? null;
+  } catch {}
+  if (!createOpencodeClient)
+    return;
+  return tryCreateClientInstance(createOpencodeClient, url);
+}
+async function tryCreateClientInstance(factory, url) {
+  try {
+    const client = factory({ baseUrl: url });
+    await verifyClient(client);
+    return { client, session: client.session, url };
+  } catch {}
+  return;
+}
+async function verifyClient(client) {
+  await (client.session.list?.({ limit: 1 }) ?? Promise.resolve());
+  const hasEvent = typeof client.event?.subscribe === "function";
+  if (!hasEvent)
+    throw new Error("no event.subscribe");
+}
+async function createFallbackSdkClient(sink) {
+  const urls = getCandidateUrls();
+  for (const url of urls) {
+    const specs = ["@opencode-ai/sdk/v2", "@opencode-ai/sdk"];
+    for (const spec of specs) {
+      const result = await tryCreateForSpec(url, spec);
+      if (result)
+        return result;
     }
   }
-  await sink.warn(`fallback SDK client: all candidates failed (${unique.join(", ")})`);
+  await sink.warn(`fallback SDK client: all candidates failed (${urls.join(", ")})`);
   return;
+}
+
+// src/adapters/v2/plugin.v2.ts
+async function handleV2IdleEvent(params) {
+  const adapter = toSessionPort(params.session);
+  await generateDailyLogbookCore({
+    sessionId: params.sessionID,
+    directory: params.directory,
+    sink: params.sink,
+    adapter
+  });
+}
+function getV2Directory(anyCtx) {
+  return anyCtx.location?.directory ?? anyCtx.directory ?? anyCtx.worktree ?? process.cwd();
+}
+function getV2CtxKeys(anyCtx) {
+  try {
+    return Object.keys(anyCtx).sort().join(",");
+  } catch {
+    return "unknown";
+  }
+}
+function detectV1Host(ctxKeys, hasEventSubscribe, hasSession) {
+  try {
+    return ctxKeys.includes("agent") && ctxKeys.includes("skill") && !hasEventSubscribe && !hasSession;
+  } catch {
+    return false;
+  }
+}
+function resolveEventHost(anyCtx) {
+  return anyCtx.event ?? anyCtx.client?.event;
+}
+async function tryHandleEventHost(eventHost, anyCtx, sink, directory) {
+  if (!eventHost?.subscribe)
+    return;
+  const controller = new AbortController;
+  const session = anyCtx.session ?? await createFallbackSessionAdapter(sink, anyCtx.serverUrl);
+  if (!session) {
+    await sink.warn("v2: no session adapter available (ctx.session missing and fallback failed); idle handling disabled");
+    return;
+  }
+  runV2EventLoop({ event: eventHost, session }, sink, directory, controller);
+  return () => controller.abort();
+}
+async function tryHandleSdkFallback(sink, directory) {
+  const sdkFallback = await createFallbackSdkClient(sink);
+  if (!sdkFallback)
+    return;
+  const sdkEventHost = sdkFallback.client.event;
+  if (!sdkEventHost?.subscribe)
+    return;
+  await sink.info?.(`v2: using SDK fallback for event subscription via ${sdkFallback.url}`);
+  const fileSession = await createFallbackSessionAdapter(sink, null);
+  if (!fileSession) {
+    await sink.warn("v2: SDK event fallback has no file session; idle handling disabled");
+    return;
+  }
+  const controller = new AbortController;
+  runV2EventLoop({ event: sdkEventHost, session: fileSession }, sink, directory, controller);
+  return () => controller.abort();
+}
+function buildV2FallbackHook(fallbackSession, sink, directory) {
+  return {
+    event: async ({ event }) => {
+      if (event.type !== "session.idle")
+        return;
+      const data = event.data;
+      const properties = event.properties;
+      const sessionID = data?.sessionID ?? properties?.sessionID;
+      if (!sessionID) {
+        await sink.warn("session.idle event missing sessionID; skipping");
+        return;
+      }
+      await handleV2IdleEvent({ sessionID, directory, sink, session: fallbackSession });
+    }
+  };
+}
+async function logV2Startup(sink, anyCtx, ctxKeys, hasEventSubscribe, hasClientEventSubscribe, hasSession, isV1Host) {
+  await sink.info?.(`daily-logbook plugin loaded (v2) app=${anyCtx.app?.name ?? "unknown"} ${anyCtx.app?.version ?? ""} ctxKeys=[${ctxKeys}] event.subscribe=${hasEventSubscribe ? "yes" : "no"} client.event.subscribe=${hasClientEventSubscribe ? "yes" : "no"} session=${hasSession ? "yes" : "no"}${isV1Host ? " [V1 host detected via Orca shared \u2014 delegating to V1]" : ""}`);
+  if (isV1Host) {
+    await sink.warn("v2Setup called on V1 host (ctxKeys without event/session). This is Orca shared's plugins being loaded by opencode 1.18.x. Daily-logbook will be handled by V1 DailyLogbookPlugin, not v2. Skipping v2 event setup.");
+  }
+}
+async function handleFallbackHook(anyCtx, sink, directory, ctxKeys) {
+  await sink.warn(`v2: ctx.event.subscribe not found (ctxKeys=[${ctxKeys}]); falling back to return {event} hook. If idle is still not delivered, use opencode (v1) with 2.0.3.`);
+  const fallbackSession = anyCtx.session ?? await createFallbackSessionAdapter(sink, anyCtx.serverUrl);
+  if (!fallbackSession) {
+    await sink.warn("v2: no session adapter for fallback hook; idle handling disabled");
+    return;
+  }
+  return buildV2FallbackHook(fallbackSession, sink, directory);
+}
+async function v2Setup(ctx) {
+  const anyCtx = ctx;
+  const directory = getV2Directory(anyCtx);
+  const sink = createV2LogSink();
+  const ctxKeys = getV2CtxKeys(anyCtx);
+  const hasEventSubscribe = typeof anyCtx.event?.subscribe === "function";
+  const hasClientEventSubscribe = typeof anyCtx.client?.event?.subscribe === "function";
+  const hasSession = !!anyCtx.session;
+  const isV1Host = detectV1Host(ctxKeys, hasEventSubscribe, hasSession);
+  await logV2Startup(sink, anyCtx, ctxKeys, hasEventSubscribe, hasClientEventSubscribe, hasSession, isV1Host);
+  if (isV1Host)
+    return;
+  const eventHost = resolveEventHost(anyCtx);
+  const hostResult = await tryHandleEventHost(eventHost, anyCtx, sink, directory);
+  if (hostResult)
+    return hostResult;
+  const sdkResult = await tryHandleSdkFallback(sink, directory);
+  if (sdkResult)
+    return sdkResult;
+  return handleFallbackHook(anyCtx, sink, directory, ctxKeys);
 }
 async function runV2EventLoop(anyCtx, sink, directory, controller) {
   try {
@@ -784,9 +952,7 @@ async function runV2EventLoop(anyCtx, sink, directory, controller) {
     for await (const event of iterable) {
       if (event.type !== "session.idle")
         continue;
-      const data = event.data;
-      const properties = event.properties;
-      const sessionID = data?.sessionID ?? properties?.sessionID;
+      const sessionID = extractSessionId(event);
       if (!sessionID) {
         await sink.warn("session.idle event missing sessionID; skipping");
         continue;
@@ -804,6 +970,13 @@ async function runV2EventLoop(anyCtx, sink, directory, controller) {
     await sink.error("v2 event loop error", error);
   }
 }
+function extractSessionId(event) {
+  const data = event.data;
+  const properties = event.properties;
+  return data?.sessionID ?? properties?.sessionID;
+}
+// src/adapters/hybrid.ts
+import { createRequire } from "module";
 function tryCreateV2Plugin() {
   const candidates = [
     { spec: "@opencode-ai/plugin", kind: "setup" },
@@ -826,29 +999,50 @@ function tryCreateV2Plugin() {
   return { id: "smapira.daily-logbook", setup: v2Setup, effect: v2Setup };
 }
 var DailyLogbookPluginV2 = tryCreateV2Plugin();
-var _hybridDefault = Object.assign(DailyLogbookPlugin, {
+var hybridDefault = Object.assign(DailyLogbookPlugin, {
   id: "smapira.daily-logbook",
   setup: v2Setup,
   effect: v2Setup
 });
-var daily_logbook_default = _hybridDefault;
+var hybrid_default = hybridDefault;
+// src/plugin.ts
+var plugin_default = hybrid_default;
 export {
+  v2Setup,
+  truncateText,
+  toSessionPort,
+  toAsyncIterable,
+  runV2EventLoop,
+  resolveV2Iterable,
+  resetForTest,
   replaceTemplateVariables,
   maskSecrets,
   isWithinWindow,
   isUsageProjectOnly,
+  isRedactEnabled,
+  isEffectStream,
   isDailyLogbookExists,
+  isAsyncIterable,
   handleV2IdleEvent,
   getUsageStats,
   getThrottleWindowMs,
   getDbPath,
+  getCandidateUrls,
   generateDailyLogbookCore,
   formatUsageTable,
   formatTokens,
   formatCost,
-  daily_logbook_default as default,
+  extractReadableText,
+  plugin_default as default,
+  createV2LogSink,
+  createV1SessionPort,
+  createV1LogSink,
+  createFallbackSessionAdapter,
+  createFallbackSdkClient,
   buildTranscript,
   buildPrompt,
+  __resetGlobalStateForTest,
+  SECRET_PATTERNS,
   SAMPLE_TEMPLATE,
   DailyLogbookPluginV2,
   DailyLogbookPlugin

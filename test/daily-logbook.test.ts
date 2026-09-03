@@ -19,8 +19,16 @@ import {
   maskSecrets,
   replaceTemplateVariables,
   SAMPLE_TEMPLATE,
+  resetForTest,
 } from "../daily-logbook";
 import { DailyLogbookPlugin } from "../daily-logbook";
+
+// Stabilize shared global guards (inFlightSessionIds / dailyLimitInFlightByDate / recentlyTriggeredAtBySessionId)
+// that moved to the use-case module. Without reset, sessionId reuse across describes ("session-a"/"session-b")
+// leaks throttle / daily-limit state and causes flaky failures when the full suite runs.
+beforeEach(() => {
+  resetForTest();
+});
 
 type Message = {
   info: { role: "user" | "assistant" };
@@ -459,6 +467,9 @@ describe("DailyLogbookPlugin daily-limit integration", () => {
     await idleEvent(eventHandler, "session-b");
 
     // 2 回目は日付キーの in-flight ガードで抑制され、prompt は 1 回目のみ送出済み。
+    // Phase2 で fetchSourceSession/fetchMessages 等をヘルパ抽出したため、firstCall が
+    // prompt に到達するまでに余分な microtask が必要。gate 到達を待ってから検証する。
+    for (let i = 0; i < 20 && gateCount === 0; i++) await new Promise<void>((r) => setTimeout(r, 0));
     expect(getPromptCount()).toBe(1);
 
     releaseFirst();

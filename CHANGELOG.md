@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.0.0 — Planned (next major) — facade removal
+
+### Deprecated
+- `daily-logbook.ts` is now a 2-line facade (`export * from "./src/plugin"` + `export { default }`) kept only for `from "../daily-logbook"` backward compatibility (Strangler Fig). It will be **removed in 3.0.0**; migrate to `from "./src/plugin"` or the package entry `dist/index.js` (`main`). Until then `from "../daily-logbook"` continues to re-export the full public API (no break).
+
 ## 2.0.9 - fix: V1/V2 hybrid and Orca shared delegation (2026-09-04)
 
 ### Fixed

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# .githooks/post-merge — merge/pull 後に index を再生成（post-commit に委譲）
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+exec "$SCRIPT_DIR/post-commit" "$@"

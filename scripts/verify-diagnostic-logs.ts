@@ -20,8 +20,7 @@ type Case = {
   expect: (logs: string[], result: unknown) => { pass: boolean; reason?: string };
 };
 
-// @ts-ignore — bun provides process globally, @types/node is not required for this script
-const verbose = (globalThis as unknown as { process: { argv: string[] } }).process.argv.includes("--verbose");
+const verbose = process.argv.includes("--verbose");
 
 function captureConsole(fn: () => Promise<unknown>): Promise<{ logs: string[]; result: unknown }> {
   const logs: string[] = [];

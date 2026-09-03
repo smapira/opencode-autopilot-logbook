@@ -1,6 +1,6 @@
 {
   "name": "opencode-autopilot-logbook",
-  "version": "2.0.8",
+  "version": "2.0.9",
   "description": "OpenCode plugin that auto-generates daily reports on session idle",
   "type": "module",
   "main": "dist/index.js",

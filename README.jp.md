@@ -29,10 +29,10 @@ opencode2 --version  # → 0.0.0-beta-xxxxx なら v2 (beta)
 
 ### OpenCode v1 — stable（Homebrew, `opencode` 1.18.x）
 
-`opencode-autopilot-logbook@2.0.3`（v1 対応の最終版）を使います。
+`opencode-autopilot-logbook@2.0.9`（最新ハイブリッド — v1/v2 両対応）を使います。`2.0.3` が v1 専用の最終版です。
 
 ```bash
-npm install -g opencode-autopilot-logbook@2.0.3
+npm install -g opencode-autopilot-logbook@2.0.9
 opencode plugin opencode-autopilot-logbook -g
 ```
 
@@ -49,10 +49,10 @@ opencode plugin opencode-autopilot-logbook -g
 
 ### OpenCode v2 — beta（`opencode2` 0.0.0-beta-xxxxx）
 
-`opencode-autopilot-logbook@2.0.5`（v2 専用）を使います。
+`opencode-autopilot-logbook@2.0.9`（最新ハイブリッド — v1/v2 両対応）を使います。`2.0.5` が最初の v2 専用版でした。
 
 ```bash
-npm install -g opencode-autopilot-logbook@2.0.5
+npm install -g opencode-autopilot-logbook@2.0.9
 opencode2 plugin add opencode-autopilot-logbook
 ```
 
@@ -89,7 +89,7 @@ cat ~/.config/opencode/opencode.jsonc | python3 -m json.tool | grep -A5 plugins
 #### v1
 
 ```bash
-npm install -g opencode-autopilot-logbook@2.0.3
+npm install -g opencode-autopilot-logbook@2.0.9
 rm -rf ~/.cache/opencode/packages/opencode-autopilot-logbook*
 opencode plugin opencode-autopilot-logbook -g --force
 npm list -g opencode-autopilot-logbook
@@ -98,7 +98,7 @@ npm list -g opencode-autopilot-logbook
 #### v2
 
 ```bash
-npm install -g opencode-autopilot-logbook@2.0.5
+npm install -g opencode-autopilot-logbook@2.0.9
 rm -rf ~/.cache/opencode/packages/opencode-autopilot-logbook*
 opencode2 plugin remove opencode-autopilot-logbook 2>/dev/null; opencode2 plugin add opencode-autopilot-logbook
 opencode2 plugin list

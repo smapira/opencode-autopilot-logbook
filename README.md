@@ -29,10 +29,10 @@ Use the matching command set. Mixing them (e.g. installing with `opencode` and c
 
 ### OpenCode v1 — stable (Homebrew, `opencode` 1.18.x)
 
-Use `opencode-autopilot-logbook@2.0.3` (latest v1-compatible).
+Use `opencode-autopilot-logbook@2.0.9` (latest hybrid — works on both v1 and v2). `2.0.3` is the last v1-only release if you need to pin.
 
 ```bash
-npm install -g opencode-autopilot-logbook@2.0.3
+npm install -g opencode-autopilot-logbook@2.0.9
 opencode plugin opencode-autopilot-logbook -g
 ```
 
@@ -49,10 +49,10 @@ opencode plugin opencode-autopilot-logbook -g
 
 ### OpenCode v2 — beta (`opencode2` 0.0.0-beta-xxxxx)
 
-Use `opencode-autopilot-logbook@2.0.5` (v2-only).
+Use `opencode-autopilot-logbook@2.0.9` (latest hybrid — works on both v1 and v2). `2.0.5` was the first v2-only release.
 
 ```bash
-npm install -g opencode-autopilot-logbook@2.0.5
+npm install -g opencode-autopilot-logbook@2.0.9
 opencode2 plugin add opencode-autopilot-logbook
 ```
 
@@ -89,7 +89,7 @@ cat ~/.config/opencode/opencode.jsonc | python3 -m json.tool | grep -A5 plugins
 #### v1
 
 ```bash
-npm install -g opencode-autopilot-logbook@2.0.3
+npm install -g opencode-autopilot-logbook@2.0.9
 rm -rf ~/.cache/opencode/packages/opencode-autopilot-logbook*
 opencode plugin opencode-autopilot-logbook -g --force
 
@@ -99,7 +99,7 @@ npm list -g opencode-autopilot-logbook
 #### v2
 
 ```bash
-npm install -g opencode-autopilot-logbook@2.0.5
+npm install -g opencode-autopilot-logbook@2.0.9
 rm -rf ~/.cache/opencode/packages/opencode-autopilot-logbook*
 opencode2 plugin remove opencode-autopilot-logbook 2>/dev/null; opencode2 plugin add opencode-autopilot-logbook
 

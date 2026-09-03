@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.0.9 - fix: V1/V2 hybrid and Orca shared delegation (2026-09-04)
+
+### Fixed
+- **V1 ホストでの `v2Setup` 誤実行を恒久的に回避**: `Orca shared` の `plugins: ["opencode-autopilot-logbook"]` が `opencode 1.18.x`（V1 ホスト）にも読み込まれ、`v2Setup` が `ctxKeys=[agent,aisdk,catalog,command,integration,options,plugin,reference,skill]`（9要素・`event`/`session` なし）で呼ばれて `daily-logbook plugin loaded (v2)` → `event.subscribe did not return AsyncIterable` の重複ログが出ていた。`ctxKeys` に `agent`+`skill` を含み `event.subscribe`/`session` を持たない場合を `isV1Host` として検出し、`[V1 host detected via Orca shared — delegating to V1]` ログと `Skipping v2 event setup.` で即 return し、V1 の `DailyLogbookPlugin` に委譲するように修正。`Orca` の `TUI stderr` 重複も解消
+- **ハイブリッド `default` の復活**: `2.0.5` で `default` を `{id,setup,effect}` のオブジェクトにしたため V1（`default` を関数として呼ぶ）で `TypeError` になっていた。`2.0.3` 以前の `Object.assign(DailyLogbookPlugin, {id, setup, effect})` ハイブリッドを復活させ、V1 では関数として、V2 では `id`/`setup`/`effect` を持つオブジェクトとして両方の検証を通過するようにした。`daily-logbook.ts` の `tryCreateV2Plugin` は温存
+- **キャッシュ同期の自己検出を強化**: `npm install -g .`（symlink `2.0.8`）は `$(npm root -g)` を `32K` に更新するが `~/.cache/opencode/packages/opencode-autopilot-logbook` は `2.0.6`（`25K`）のまま残り、同じ旧ログが出続ける事象を確認。`README` の `Verify — Detect Any Remnants`（9箇所）と `scripts/complete-uninstall.sh v5`（キャッシュ `packages`/`npm`/`Orca shared` を含む7箇所原子除去、`--dry-run` 対応）で自己検出・除去できるようにした。`scripts/verify-diagnostic-logs.ts`（V1/V2 の `ctxKeys`/`toAsyncIterable => AsyncIterable` を検証、`bun scripts/verify-diagnostic-logs.ts` で `All diagnostic log checks passed`）を同梱。`dist` は `32K` に再構築（`bun test 85 pass` 維持）
+
 ## 2.0.8 - fix: v2 SDK this binding and file-direct fallback (2026-09-04)
 
 ### Fixed

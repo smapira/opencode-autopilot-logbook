@@ -567,7 +567,18 @@ async function v2Setup(ctx) {
   const hasEventSubscribe = typeof anyCtx.event?.subscribe === "function";
   const hasClientEventSubscribe = typeof anyCtx.client?.event?.subscribe === "function";
   const hasSession = !!anyCtx.session;
-  await sink.info?.(`daily-logbook plugin loaded (v2) app=${anyCtx.app?.name ?? "unknown"} ${anyCtx.app?.version ?? ""} ctxKeys=[${ctxKeys}] event.subscribe=${hasEventSubscribe ? "yes" : "no"} client.event.subscribe=${hasClientEventSubscribe ? "yes" : "no"} session=${hasSession ? "yes" : "no"}`);
+  const isV1Host = (() => {
+    try {
+      return ctxKeys.includes("agent") && ctxKeys.includes("skill") && !hasEventSubscribe && !hasSession;
+    } catch {
+      return false;
+    }
+  })();
+  await sink.info?.(`daily-logbook plugin loaded (v2) app=${anyCtx.app?.name ?? "unknown"} ${anyCtx.app?.version ?? ""} ctxKeys=[${ctxKeys}] event.subscribe=${hasEventSubscribe ? "yes" : "no"} client.event.subscribe=${hasClientEventSubscribe ? "yes" : "no"} session=${hasSession ? "yes" : "no"}${isV1Host ? " [V1 host detected via Orca shared \u2014 delegating to V1]" : ""}`);
+  if (isV1Host) {
+    await sink.warn("v2Setup called on V1 host (ctxKeys without event/session). This is Orca shared's plugins being loaded by opencode 1.18.x. Daily-logbook will be handled by V1 DailyLogbookPlugin, not v2. Skipping v2 event setup.");
+    return;
+  }
   const eventHost = anyCtx.event ?? anyCtx.client?.event;
   if (eventHost?.subscribe) {
     const controller = new AbortController;
@@ -815,11 +826,12 @@ function tryCreateV2Plugin() {
   return { id: "smapira.daily-logbook", setup: v2Setup, effect: v2Setup };
 }
 var DailyLogbookPluginV2 = tryCreateV2Plugin();
-var daily_logbook_default = {
+var _hybridDefault = Object.assign(DailyLogbookPlugin, {
   id: "smapira.daily-logbook",
   setup: v2Setup,
   effect: v2Setup
-};
+});
+var daily_logbook_default = _hybridDefault;
 export {
   replaceTemplateVariables,
   maskSecrets,

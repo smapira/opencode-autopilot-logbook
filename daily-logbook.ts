@@ -693,9 +693,22 @@ async function v2Setup(ctx: unknown): Promise<(() => void) | { event: (input: { 
   const hasEventSubscribe = typeof anyCtx.event?.subscribe === "function";
   const hasClientEventSubscribe = typeof anyCtx.client?.event?.subscribe === "function";
   const hasSession = !!anyCtx.session;
+  const isV1Host = (() => {
+    try {
+      // opencode 1.18.x のホストで Orca shared の plugins 経由で v2Setup が呼ばれた場合を検出
+      // V1 ホストは ctxKeys が 9要素 (agent,aisdk,...) で event/session が無いが、実際は V1 の DailyLogbookPlugin が呼ばれるべき
+      return ctxKeys.includes("agent") && ctxKeys.includes("skill") && !hasEventSubscribe && !hasSession;
+    } catch {
+      return false;
+    }
+  })();
   await sink.info?.(
-    `daily-logbook plugin loaded (v2) app=${anyCtx.app?.name ?? "unknown"} ${anyCtx.app?.version ?? ""} ctxKeys=[${ctxKeys}] event.subscribe=${hasEventSubscribe ? "yes" : "no"} client.event.subscribe=${hasClientEventSubscribe ? "yes" : "no"} session=${hasSession ? "yes" : "no"}`,
+    `daily-logbook plugin loaded (v2) app=${anyCtx.app?.name ?? "unknown"} ${anyCtx.app?.version ?? ""} ctxKeys=[${ctxKeys}] event.subscribe=${hasEventSubscribe ? "yes" : "no"} client.event.subscribe=${hasClientEventSubscribe ? "yes" : "no"} session=${hasSession ? "yes" : "no"}${isV1Host ? " [V1 host detected via Orca shared — delegating to V1]" : ""}`,
   );
+  if (isV1Host) {
+    await sink.warn("v2Setup called on V1 host (ctxKeys without event/session). This is Orca shared's plugins being loaded by opencode 1.18.x. Daily-logbook will be handled by V1 DailyLogbookPlugin, not v2. Skipping v2 event setup.");
+    return;
+  }
 
   // 恒久対応: beta 18999 の PluginContext は {agent,aisdk,catalog,command,integration,options,plugin,reference,skill}
   // のみで event/session を持たない。ctx.event が無い場合は、ホストが旧来の
@@ -1063,8 +1076,12 @@ function tryCreateV2Plugin(): unknown {
 
 export const DailyLogbookPluginV2: unknown = tryCreateV2Plugin();
 
-export default {
+// V1/V2 ハイブリッド: V1 ホストは default を関数として呼び出し、V2 ホストは object として検証する
+// 2.0.3 以前のハイブリッドを復活させ、opencode 1.18.x でも 2.0.8 が動作するようにする
+const _hybridDefault: unknown = Object.assign(DailyLogbookPlugin, {
   id: "smapira.daily-logbook",
   setup: v2Setup,
   effect: v2Setup,
-} as unknown as typeof DailyLogbookPlugin | typeof DailyLogbookPluginV2;
+});
+
+export default _hybridDefault as unknown as typeof DailyLogbookPlugin | typeof DailyLogbookPluginV2;

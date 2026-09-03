@@ -1,7 +1,10 @@
 // @bun
 // daily-logbook.ts
 import { existsSync, readFileSync } from "fs";
-import { resolve } from "path";
+import { createRequire } from "module";
+import { homedir } from "os";
+import { basename, join, resolve } from "path";
+import { Database } from "bun:sqlite";
 var SERVICE_NAME = "daily-logbook-plugin";
 var GENERATED_TITLE_PREFIX = "[daily-logbook:auto]";
 var DUPLICATE_WINDOW_MS = 90000;
@@ -28,7 +31,10 @@ var SAMPLE_TEMPLATE = `Create a daily logbook based on the session {{ sessionId 
 - Keep the logbook concise and focused on key points
 - Prioritize discussion highlights, decisions made, and next actions
 - Output language is template-driven (this default template uses English)
-- Clearly separate facts from opinions (speculation/evaluation)`;
+- Clearly separate facts from opinions (speculation/evaluation)
+
+## Usage
+{{ usage }}`;
 var SECRET_PATTERNS = [
   /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
   /\b[sS][kK]-[A-Za-z0-9_-]{8,}\b/g,
@@ -46,6 +52,21 @@ function maskSecrets(value) {
     masked = masked.replace(pattern, "***");
   }
   return masked;
+}
+function createV2LogSink() {
+  return {
+    warn: (message) => {
+      console.warn(`[${SERVICE_NAME}] ${message}`);
+    },
+    error: (message, error) => {
+      const errorMessage = error instanceof Error ? error.message : error !== undefined ? String(error) : "";
+      const fullMessage = errorMessage ? `${message}: ${errorMessage}` : message;
+      console.error(`[${SERVICE_NAME}] ${fullMessage}`);
+    },
+    info: (message) => {
+      console.log(`[${SERVICE_NAME}] ${message}`);
+    }
+  };
 }
 function isPluginDisabled() {
   return process.env.OPENCODE_DAILY_LOGBOOK_DISABLED === "true";
@@ -70,6 +91,110 @@ function getThrottleWindowMs() {
   }
   return parsedMs;
 }
+function isUsageProjectOnly() {
+  return process.env.OPENCODE_DAILY_LOGBOOK_USAGE_PROJECT_ONLY !== "false";
+}
+function getDbPath() {
+  const custom = process.env.OPENCODE_DAILY_LOGBOOK_DB_PATH;
+  if (custom && custom.trim() !== "") {
+    return custom;
+  }
+  return join(homedir(), ".local/share/opencode/opencode.db");
+}
+function getUsageStats(params) {
+  const dbPath = params.dbPath ?? getDbPath();
+  if (!existsSync(dbPath)) {
+    return null;
+  }
+  let db = null;
+  try {
+    db = new Database(dbPath, { readonly: true });
+    const normalizedDir = resolve(params.directory);
+    let projectId = null;
+    try {
+      const projStmt = db.prepare("SELECT id FROM project WHERE worktree = ?");
+      const projRow = projStmt.get(normalizedDir);
+      if (projRow) {
+        projectId = projRow.id;
+      }
+    } catch {}
+    const yyyyMmDd = params.date.length === 8 ? `${params.date.slice(0, 4)}-${params.date.slice(4, 6)}-${params.date.slice(6, 8)}` : params.date;
+    let dailyRow;
+    if (projectId && params.projectOnly) {
+      const stmt = db.prepare(`SELECT count(*) as sessionsToday, coalesce(sum(cost),0) as dayCost, coalesce(sum(tokens_input),0) as tokensInput, coalesce(sum(tokens_output),0) as tokensOutput, coalesce(sum(tokens_cache_read),0) as cacheRead FROM session WHERE project_id = ? AND date(datetime(time_created/1000,'unixepoch','localtime')) = ?`);
+      dailyRow = stmt.get(projectId, yyyyMmDd);
+    } else {
+      const stmt = db.prepare(`SELECT count(*) as sessionsToday, coalesce(sum(cost),0) as dayCost, coalesce(sum(tokens_input),0) as tokensInput, coalesce(sum(tokens_output),0) as tokensOutput, coalesce(sum(tokens_cache_read),0) as cacheRead FROM session WHERE date(datetime(time_created/1000,'unixepoch','localtime')) = ?`);
+      dailyRow = stmt.get(yyyyMmDd);
+    }
+    let totalRow;
+    if (projectId && params.projectOnly) {
+      const stmt = db.prepare(`SELECT coalesce(sum(cost),0) as totalCost FROM session WHERE project_id = ?`);
+      totalRow = stmt.get(projectId);
+    } else {
+      const stmt = db.prepare(`SELECT coalesce(sum(cost),0) as totalCost FROM session`);
+      totalRow = stmt.get();
+    }
+    let sessionCost = null;
+    try {
+      const stmt = db.prepare(`SELECT cost FROM session WHERE id = ?`);
+      const row = stmt.get(params.sessionId);
+      if (row && row.cost !== null && row.cost !== undefined) {
+        sessionCost = Number(row.cost);
+      }
+    } catch {
+      sessionCost = null;
+    }
+    return {
+      dayCost: Number(dailyRow?.dayCost ?? 0),
+      tokensInput: Number(dailyRow?.tokensInput ?? 0),
+      tokensOutput: Number(dailyRow?.tokensOutput ?? 0),
+      cacheRead: Number(dailyRow?.cacheRead ?? 0),
+      sessionsToday: Number(dailyRow?.sessionsToday ?? 0),
+      totalCost: Number(totalRow?.totalCost ?? 0),
+      sessionCost
+    };
+  } catch {
+    return null;
+  } finally {
+    try {
+      db?.close();
+    } catch {}
+  }
+}
+function formatCost(value) {
+  return `$${value.toFixed(2)}`;
+}
+function formatTokens(value) {
+  if (value >= 1e9) {
+    return `${(value / 1e9).toFixed(1)}B`;
+  }
+  if (value >= 1e6) {
+    return `${(value / 1e6).toFixed(1)}M`;
+  }
+  if (value >= 1000) {
+    return `${(value / 1000).toFixed(1)}K`;
+  }
+  return `${value}`;
+}
+function formatUsageTable(stats, date, projectDisplayName) {
+  if (!stats) {
+    return "";
+  }
+  const displayDate = date.length === 8 ? `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}` : date;
+  const heading = projectDisplayName ? `## Usage \u2014 ${displayDate} (project: ${projectDisplayName})` : `## Usage \u2014 ${displayDate}`;
+  const hasSessionCost = stats.sessionCost !== null && stats.sessionCost !== undefined;
+  const costLabel = hasSessionCost ? "Cost (\u672C\u65E5/\u30BB\u30C3\u30B7\u30E7\u30F3)" : "Cost (\u672C\u65E5)";
+  const costValue = hasSessionCost ? `${formatCost(stats.dayCost)} / ${formatCost(stats.sessionCost)}` : formatCost(stats.dayCost);
+  const tokensValue = `${formatTokens(stats.tokensInput)} / ${formatTokens(stats.tokensOutput)} / ${formatTokens(stats.cacheRead)}`;
+  return `${heading}
+| \u9805\u76EE | \u5024 |
+|---|---|
+| ${costLabel} | ${costValue} |
+| Tokens Input / Output / Cache Read | ${tokensValue} |
+| Sessions (\u672C\u65E5) | ${stats.sessionsToday} |
+| Total Cost (\u7D2F\u8A08) | ${formatCost(stats.totalCost)} |`;
+}
 function formatDateTokens(now) {
   const year = now.getFullYear();
   const month = now.getMonth() + 1;
@@ -79,9 +204,9 @@ function formatDateTokens(now) {
     dateJp: `${year}\u5E74${month}\u6708${day}\u65E5`
   };
 }
-function replaceTemplateVariables(template, sessionId, now, outputDir) {
+function replaceTemplateVariables(template, sessionId, now, outputDir, usageTable) {
   const { date, dateJp } = formatDateTokens(now);
-  return template.replace(/\{\{\s*sessionId\s*\}\}/g, sessionId).replace(/\{\{\s*date\s*\}\}/g, date).replace(/\{\{\s*dateJp\s*\}\}/g, dateJp).replace(/\{\{\s*outputDir\s*\}\}/g, outputDir);
+  return template.replace(/\{\{\s*sessionId\s*\}\}/g, () => sessionId).replace(/\{\{\s*date\s*\}\}/g, () => date).replace(/\{\{\s*dateJp\s*\}\}/g, () => dateJp).replace(/\{\{\s*outputDir\s*\}\}/g, () => outputDir).replace(/\{\{\s*usage\s*\}\}/g, () => usageTable ?? "").replace(/\{\{\s*usageTable\s*\}\}/g, () => usageTable ?? "");
 }
 function loadTemplate(directory) {
   const customTemplatePath = process.env.OPENCODE_DAILY_LOGBOOK_TEMPLATE;
@@ -135,17 +260,20 @@ ${text}`;
   const maskedTranscript = isRedactEnabled() ? maskSecrets(transcriptLines) : transcriptLines;
   return truncateText(maskedTranscript, TRANSCRIPT_MAX_CHARS);
 }
-function buildPrompt(template, sessionId, transcript, includeTranscript, outputDir, now) {
-  const replacedTemplate = replaceTemplateVariables(template, sessionId, now, outputDir);
+function buildPrompt(template, sessionId, transcript, includeTranscript, outputDir, now, usageTable) {
+  const replacedTemplate = replaceTemplateVariables(template, sessionId, now, outputDir, usageTable);
+  let basePrompt;
   if (!includeTranscript || !transcript) {
-    return replacedTemplate;
-  }
-  return `${replacedTemplate}
+    basePrompt = replacedTemplate;
+  } else {
+    basePrompt = `${replacedTemplate}
 
 ---
 Below is an excerpt of the session ${sessionId} history. Create the daily logbook based on this history.
 
 ${transcript}`;
+  }
+  return basePrompt;
 }
 async function logError(client, message, error) {
   const errorMessage = error instanceof Error ? error.message : String(error);
@@ -235,6 +363,25 @@ var DailyLogbookPlugin = async ({ client, directory }) => {
             return;
           }
         }
+        let usageTable;
+        try {
+          const stats = getUsageStats({
+            directory,
+            sessionId: originalSessionId,
+            date,
+            projectOnly: isUsageProjectOnly()
+          });
+          if (stats) {
+            const projectDisplayName = basename(resolve(directory));
+            const displayDate = `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}`;
+            const table = formatUsageTable(stats, displayDate, projectDisplayName);
+            if (table) {
+              usageTable = table;
+            }
+          }
+        } catch (error) {
+          await logWarn(client, `Failed to get usage stats: ${error instanceof Error ? error.message : String(error)}`);
+        }
         let template = SAMPLE_TEMPLATE;
         try {
           template = loadTemplate(directory);
@@ -253,7 +400,7 @@ var DailyLogbookPlugin = async ({ client, directory }) => {
         const includeTranscript = isTranscriptIncluded();
         const transcript = includeTranscript ? buildTranscript(messagesResult.data) : "";
         const promptOutputDir = isDailyLimited ? resolve(directory, outputDir) : outputDir;
-        const prompt = buildPrompt(template, originalSessionId, transcript, includeTranscript, promptOutputDir, now);
+        const prompt = buildPrompt(template, originalSessionId, transcript, includeTranscript, promptOutputDir, now, usageTable);
         const generatedSessionResult = await client.session.create({
           body: {
             title: `${GENERATED_TITLE_PREFIX} ${date}`
@@ -291,14 +438,243 @@ var DailyLogbookPlugin = async ({ client, directory }) => {
     }
   };
 };
-var daily_logbook_default = DailyLogbookPlugin;
+async function handleV2IdleEvent(params) {
+  const { sessionID: originalSessionId, directory, sink, session } = params;
+  if (isPluginDisabled()) {
+    return;
+  }
+  const nowMs = Date.now();
+  const throttleWindowMs = getThrottleWindowMs();
+  pruneExpiredGuards(nowMs, throttleWindowMs);
+  if (inFlightSessionIds.has(originalSessionId) || isDuplicateTrigger(originalSessionId, nowMs, throttleWindowMs)) {
+    return;
+  }
+  const now = new Date;
+  const { date } = formatDateTokens(now);
+  const outputDir = getOutputDir();
+  const isDailyLimited = isDailyLimitEnabled();
+  if (isDailyLimited && dailyLimitInFlightByDate.has(date)) {
+    await sink.warn(`Daily logbook for ${date} is already being generated. Skipping (OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT=true).`);
+    return;
+  }
+  inFlightSessionIds.add(originalSessionId);
+  if (isDailyLimited) {
+    dailyLimitInFlightByDate.add(date);
+  }
+  try {
+    let getResult;
+    try {
+      getResult = await session.get({ sessionID: originalSessionId });
+    } catch (error) {
+      getResult = { error };
+    }
+    const getTyped = getResult;
+    if (getTyped?.error) {
+      await sink.error("Failed to fetch source session", getTyped.error);
+      return;
+    }
+    const currentSessionTitle = getTyped?.data?.title ?? getTyped?.title ?? "";
+    if (currentSessionTitle.startsWith(GENERATED_TITLE_PREFIX)) {
+      return;
+    }
+    if (isDailyLimited) {
+      const customTemplatePath = process.env.OPENCODE_DAILY_LOGBOOK_TEMPLATE;
+      if (customTemplatePath) {
+        await sink.warn("OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT is not supported together with OPENCODE_DAILY_LOGBOOK_TEMPLATE (file name pattern is unknown). Daily limit check is skipped.");
+      } else if (isDailyLogbookExists(directory, outputDir, date)) {
+        await sink.warn(`Daily logbook for ${date} already exists. Skipping generation (OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT=true).`);
+        return;
+      }
+    }
+    let usageTable;
+    try {
+      const stats = getUsageStats({
+        directory,
+        sessionId: originalSessionId,
+        date,
+        projectOnly: isUsageProjectOnly()
+      });
+      if (stats) {
+        const projectDisplayName = basename(resolve(directory));
+        const displayDate = `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}`;
+        const table = formatUsageTable(stats, displayDate, projectDisplayName);
+        if (table) {
+          usageTable = table;
+        }
+      }
+    } catch (error) {
+      await sink.warn(`Failed to get usage stats: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    let template = SAMPLE_TEMPLATE;
+    try {
+      template = loadTemplate(directory);
+    } catch (error) {
+      const customTemplatePath = process.env.OPENCODE_DAILY_LOGBOOK_TEMPLATE;
+      await sink.warn(`Template load failed (${customTemplatePath ?? "unknown"}). Fallback to SAMPLE_TEMPLATE.`);
+      await sink.error("Template load error", error);
+    }
+    let messagesResult;
+    try {
+      if (session.context) {
+        messagesResult = await session.context({ sessionID: originalSessionId });
+      } else if (session.messages) {
+        messagesResult = await session.messages({ path: { id: originalSessionId } });
+      } else {
+        messagesResult = { error: new Error("no messages method available") };
+      }
+    } catch (error) {
+      messagesResult = { error };
+    }
+    const messagesTyped = messagesResult;
+    if (messagesTyped?.error) {
+      await sink.error("Failed to load source session messages", messagesTyped.error);
+      return;
+    }
+    const messagesData = messagesTyped?.data ?? messagesTyped?.messages ?? messagesTyped ?? [];
+    const safeMessages = Array.isArray(messagesData) ? messagesData : [];
+    const includeTranscript = isTranscriptIncluded();
+    const transcript = includeTranscript ? buildTranscript(safeMessages) : "";
+    const promptOutputDir = isDailyLimited ? resolve(directory, outputDir) : outputDir;
+    const prompt = buildPrompt(template, originalSessionId, transcript, includeTranscript, promptOutputDir, now, usageTable);
+    let createResult;
+    try {
+      createResult = await session.create({ title: `${GENERATED_TITLE_PREFIX} ${date}` });
+    } catch (error) {
+      createResult = { error };
+    }
+    const createTyped = createResult;
+    if (createTyped?.error) {
+      await sink.error("Failed to create daily logbook session", createTyped.error);
+      return;
+    }
+    const generatedSessionId = createTyped?.data?.id ?? createTyped?.id ?? createTyped?.sessionID;
+    if (!generatedSessionId) {
+      await sink.error("Failed to create daily logbook session", "missing session id");
+      return;
+    }
+    let promptResult;
+    try {
+      if (session.prompt) {
+        promptResult = await session.prompt({ sessionID: generatedSessionId, text: prompt });
+      } else if (session.generate) {
+        promptResult = await session.generate({ sessionID: generatedSessionId, text: prompt });
+      } else if (session.promptAsync) {
+        promptResult = await session.promptAsync({
+          path: { id: generatedSessionId },
+          body: { parts: [{ type: "text", text: prompt }] }
+        });
+      } else {
+        promptResult = { error: new Error("no prompt method available on session") };
+      }
+    } catch (error) {
+      promptResult = { error };
+    }
+    const promptTyped = promptResult;
+    if (promptTyped?.error) {
+      await sink.error("Failed to send daily logbook prompt", promptTyped.error);
+      return;
+    }
+    recentlyTriggeredAtBySessionId.set(originalSessionId, nowMs);
+  } catch (error) {
+    await sink.error("Unhandled error while generating daily logbook", error);
+  } finally {
+    inFlightSessionIds.delete(originalSessionId);
+    if (isDailyLimited) {
+      dailyLimitInFlightByDate.delete(date);
+    }
+  }
+}
+async function v2Setup(ctx) {
+  const anyCtx = ctx;
+  const directory = anyCtx.location?.directory ?? anyCtx.directory ?? process.cwd();
+  const sink = createV2LogSink();
+  await sink.info?.(`daily-logbook plugin loaded (v2) app=${anyCtx.app?.name ?? "unknown"} ${anyCtx.app?.version ?? ""}`);
+  const controller = new AbortController;
+  (async () => {
+    try {
+      const subscribe = anyCtx.event?.subscribe;
+      if (!subscribe) {
+        await sink.warn("event.subscribe not available; v2 plugin idle");
+        return;
+      }
+      let iterable;
+      try {
+        iterable = subscribe({ signal: controller.signal });
+      } catch {
+        await sink.warn("event.subscribe({signal}) failed; v2 plugin idle");
+        return;
+      }
+      if (!iterable || typeof iterable[Symbol.asyncIterator] !== "function") {
+        await sink.warn("event.subscribe did not return AsyncIterable; v2 plugin idle");
+        return;
+      }
+      for await (const event of iterable) {
+        if (event.type !== "session.idle") {
+          continue;
+        }
+        const data = event.data;
+        const properties = event.properties;
+        const sessionID = data?.sessionID ?? properties?.sessionID;
+        if (!sessionID) {
+          await sink.warn("session.idle event missing sessionID; skipping");
+          continue;
+        }
+        if (!anyCtx.session) {
+          await sink.warn("ctx.session not available; skipping idle handling");
+          continue;
+        }
+        await handleV2IdleEvent({ sessionID, directory, sink, session: anyCtx.session });
+      }
+    } catch (error) {
+      const name = error?.name;
+      if (name === "AbortError") {
+        return;
+      }
+      await sink.error("v2 event loop error", error);
+    }
+  })();
+  return () => controller.abort();
+}
+function tryCreateV2Plugin() {
+  try {
+    const require2 = createRequire(import.meta.url);
+    const mod = require2("@opencode-ai/plugin");
+    const define = mod?.Plugin?.define;
+    if (typeof define === "function") {
+      return define({ id: "smapira.daily-logbook", setup: v2Setup });
+    }
+  } catch {}
+  return { id: "smapira.daily-logbook", setup: v2Setup };
+}
+var DailyLogbookPluginV2 = tryCreateV2Plugin();
+var _defaultExport = (() => {
+  try {
+    const require2 = createRequire(import.meta.url);
+    const mod = require2("@opencode-ai/plugin");
+    if (mod?.Plugin?.define) {
+      return DailyLogbookPluginV2;
+    }
+  } catch {}
+  return DailyLogbookPlugin;
+})();
+var daily_logbook_default = _defaultExport;
 export {
+  replaceTemplateVariables,
   maskSecrets,
   isWithinWindow,
+  isUsageProjectOnly,
   isDailyLogbookExists,
+  handleV2IdleEvent,
+  getUsageStats,
   getThrottleWindowMs,
+  getDbPath,
+  formatUsageTable,
+  formatTokens,
+  formatCost,
   daily_logbook_default as default,
   buildTranscript,
   buildPrompt,
+  SAMPLE_TEMPLATE,
+  DailyLogbookPluginV2,
   DailyLogbookPlugin
 };

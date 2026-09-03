@@ -107,6 +107,7 @@
 /.opencode/
 .DS_Store
 /artifacts/
-/dist
+# dist is tracked for npm publish (package.json files: ["dist"]); build with `bun run build`
+# /dist  <- intentionally not ignored; keep dist/index.js in git for direct install
 node_modules/
 package-lock.json

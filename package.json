@@ -31,6 +31,7 @@
   "devDependencies": {
     "@opencode-ai/plugin": "^1.0.0"
   },
+  "//": "V2 migration: switch to beta with `npm i -D @opencode-ai/plugin@beta` on beta branch (see CHANGELOG ## 2.0.0 - BREAKING). Current stable keeps ^1.0.0 so `bun test` stays green; V2 code uses dynamic import + fallback plain object.",
   "repository": {
     "type": "git",
     "url": "https://github.com/smapira/opencode-autopilot-logbook.git"

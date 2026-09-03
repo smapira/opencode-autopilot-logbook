@@ -1,5 +1,26 @@
 # Changelog
 
+## 2.0.0 - BREAKING: migrate to @opencode-ai/plugin beta (unreleased / beta branch)
+
+### BREAKING
+- **V2 Plugin API**: `DailyLogbookPlugin` (V1 `Plugin = async ({client,directory})=>({event})`) は温存しつつ、`Plugin.define({ id: "smapira.daily-logbook", setup(ctx) })` による V2 対応を追加（デュアル対応）。V2 では `ctx.event.subscribe({ signal }) => AsyncIterable<V2Event>` + `event.data.sessionID` / `ctx.session.get({ sessionID })` / `ctx.session.context({ sessionID })` / `ctx.session.create({ title })` / `ctx.session.prompt({ sessionID, text })` のフラット形状に移行。V1 の `path:{id}` / `body:{parts}` は廃止。対照表は `daily-logbook.ts` コメントを参照
+  - `ctx.app.log` は V2 で存在しない（`ctx.app` は `{name,version,channel}` のみ）ためログは `console.warn/error` (`[daily-logbook]` prefix) に置換。`type Logger = PluginInput["client"]` は `AppLogSink` に抽象化
+  - `ctx.location.directory` が旧 `directory` に相当
+  - promise版 `subscribe({signal})` は全イベントが流れ `if(type==="session.idle")` でフィルタ。effect版 `subscribe(type):Stream` との差異をコメントで明記
+
+### Added
+- `DailyLogbookPluginV2` (`{ id, setup }`) と `handleV2IdleEvent`（テスト可能な抽出関数）を `daily-logbook.ts` に追加。`@opencode-ai/plugin@beta` では `Plugin.define` でラップ、stable 1.18.x では動的 `createRequire` + フォールバック plain object により `bun test` が壊れない
+- `AppLogSink` / `createV1LogSink` / `createV2LogSink` によるログ抽象化
+
+### Changed
+- `package.json` は現行 stable では `devDependencies."@opencode-ai/plugin":"^1.0.0"` を維持。beta ブランチでの切り替え手順: `npm i -D @opencode-ai/plugin@beta`（`opencode@beta` と併用）。`bun:sqlite` や純粋ロジック（`maskSecrets` / `buildTranscript` / `throttle` / `dailyLimit` など）は変更なし（トランケート前にマスキングは維持）
+
+### Migration
+- beta での検証: `npx opencode@beta --version` → `opencode --standalone` (beta channel) 起動 → `session.idle` で `artifacts/daily/YYYYMMDD_logbook.md` が生成されることを確認
+- `opencode.json` は V2 で `plugins: [...]` (`{package, options}` 形式) が推奨だが beta 期間中は `plugin` と共存可能（E2Eで確定要）。ファイル配置は `.opencode/plugins/` を推奨（V2は `plugin/` と `plugins/` 両方を読む）
+- beta 期間中は再 breaking の可能性あり。本 CHANGELOG と `daily-logbook.ts` 冒頭の対照表コメントを追従すること
+- V1 利用者への配慮: 本バージョンはデュアル対応のため既存 V1 利用者の挙動は壊さない。`plugin` / `plugins` 共存の可否はリリース時に判断し、必要なら major bump で分離
+
 ## 1.2.0 (2026-09-02)
 
 ### Added

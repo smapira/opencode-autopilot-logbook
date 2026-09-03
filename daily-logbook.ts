@@ -91,6 +91,8 @@ type AppLogSink = {
   info?: (message: string) => Promise<void> | void;
 };
 
+// V1 log sink — retained for V1 host; not used in V2 console path but kept for hybrid compatibility.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function createV1LogSink(client: Logger): AppLogSink {
   return {
     warn: async (message) => {
@@ -966,7 +968,8 @@ async function v2Setup(ctx: unknown): Promise<(() => void) | void> {
       // promise版は type引数なし、effect版は type引数あり。両対応のためまずは signal 付きで試す。
       let iterable: AsyncIterable<{ type: string; data?: unknown; properties?: unknown }> | undefined;
       try {
-        iterable = (subscribe as (opts: { signal: AbortSignal }) => AsyncIterable<unknown>)({ signal: controller.signal }) as never;
+        const raw = (subscribe as (opts: { signal: AbortSignal }) => unknown)({ signal: controller.signal });
+        iterable = raw as AsyncIterable<{ type: string; data?: unknown; properties?: unknown }>;
       } catch {
         // effect版では subscribe("session.idle") の形かもしれないが、本実装は promise版を優先
         await sink.warn("event.subscribe({signal}) failed; v2 plugin idle");
@@ -976,7 +979,7 @@ async function v2Setup(ctx: unknown): Promise<(() => void) | void> {
         await sink.warn("event.subscribe did not return AsyncIterable; v2 plugin idle");
         return;
       }
-      for await (const event of iterable) {
+      for await (const event of iterable as AsyncIterable<{ type: string; data?: unknown; properties?: unknown }>) {
         // V1: event.properties.sessionID -> V2: event.data.sessionID
         if (event.type !== "session.idle") {
           continue;
@@ -1007,6 +1010,8 @@ async function v2Setup(ctx: unknown): Promise<(() => void) | void> {
   return () => controller.abort();
 }
 
+// Retained for future beta detection — not used in hybrid default but kept for explicit V1/V2 branching if needed.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function isBetaPluginAvailable(): boolean {
   // ESM-only beta (0.0.0-beta-*) は `require("@opencode-ai/plugin")` が
   // `No "exports" main defined` で失敗するため、package.json の version で判定する。
@@ -1035,7 +1040,6 @@ function isBetaPluginAvailable(): boolean {
   // フォールバック: 旧来の require 判定（stable 1.x の CJS では成功する）
   try {
     const require = createRequire(import.meta.url);
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const mod = require("@opencode-ai/plugin") as { Plugin?: { define?: unknown } };
     if (mod?.Plugin?.define) {
       return true;
@@ -1051,7 +1055,6 @@ function tryCreateV2Plugin(): unknown {
   // plain object を返しても V2 ホストは受け付ける。可能なら define でラップを試みる。
   try {
     const require = createRequire(import.meta.url);
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const mod = require("@opencode-ai/plugin") as { Plugin?: { define?: (p: { id: string; setup: (ctx: unknown) => Promise<unknown> }) => unknown } };
     const define = mod?.Plugin?.define;
     if (typeof define === "function") {

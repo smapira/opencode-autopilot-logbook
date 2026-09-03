@@ -354,23 +354,23 @@ function createMockClient(options: { gatePrompt?: () => Promise<void>; failure?:
   const client: MockClient = {
     app: { log: async () => {} },
     session: {
-      get: () =>
+      get: async () =>
         failWith(
           "get",
-          () => ({ data: undefined as never, error: mockError }),
-          () => ({ data: { id: "src-session", title: "test session" }, error: undefined }),
+          () => ({ data: undefined as unknown as { id: string; title: string }, error: mockError }) as unknown as { data: { id: string; title: string }; error?: unknown },
+          () => ({ data: { id: "src-session", title: "test session" }, error: undefined }) as { data: { id: string; title: string }; error?: unknown },
         ),
-      messages: () =>
+      messages: async () =>
         failWith(
           "messages",
-          () => ({ data: undefined as never, error: mockError }),
-          () => ({ data: [], error: undefined }),
+          () => ({ data: undefined as unknown as unknown[], error: mockError }) as unknown as { data: unknown[]; error?: unknown },
+          () => ({ data: [] as unknown[], error: undefined }) as { data: unknown[]; error?: unknown },
         ),
-      create: () =>
+      create: async () =>
         failWith(
           "create",
-          () => ({ data: undefined as never, error: mockError }),
-          () => ({ data: { id: "generated-session" }, error: undefined }),
+          () => ({ data: undefined as unknown as { id: string }, error: mockError }) as unknown as { data: { id: string }; error?: unknown },
+          () => ({ data: { id: "generated-session" }, error: undefined }) as { data: { id: string }; error?: unknown },
         ),
       // promptAsync は失敗経路を先に判定する。失敗した prompt は「送出済み」に
       // 数えないため、エラー経路テストで成功回数（= ガード解除後の生成通過）を
@@ -1293,7 +1293,7 @@ describe("DailyLogbookPluginV2", () => {
         // context なし
         messages: async () => ({ data: [] }),
         create: async () => ({ data: { id: "gen-2" } }),
-        prompt: async (input) => {
+        prompt: async (input: { sessionID: string; text: string }) => {
           promptTexts.push(input.text);
           return {};
         },
@@ -1317,7 +1317,7 @@ describe("DailyLogbookPluginV2", () => {
       const dateStr = todayDateString();
       writeFileSync(join(tmpDir, outputDir, `${dateStr}_logbook.md`), "existing");
       const sinkWarns: string[] = [];
-      const sink = { warn: async (m: string) => sinkWarns.push(m), error: async () => {} };
+      const sink = { warn: async (m: string): Promise<void> => { sinkWarns.push(m); }, error: async () => {} };
       const session = {
         get: async () => ({ data: { title: "t" } }),
         context: async () => ({ data: [] }),
@@ -1327,7 +1327,7 @@ describe("DailyLogbookPluginV2", () => {
       let createCalled = false;
       const trackingSession = {
         ...session,
-        create: async (input: { title: string }) => {
+        create: async (_input: { title: string }) => {
           createCalled = true;
           return { data: { id: "gen-3" } };
         },

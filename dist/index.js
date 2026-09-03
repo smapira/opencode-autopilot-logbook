@@ -599,7 +599,8 @@ async function v2Setup(ctx) {
       }
       let iterable;
       try {
-        iterable = subscribe({ signal: controller.signal });
+        const raw = subscribe({ signal: controller.signal });
+        iterable = raw;
       } catch {
         await sink.warn("event.subscribe({signal}) failed; v2 plugin idle");
         return;

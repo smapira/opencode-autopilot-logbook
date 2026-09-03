@@ -639,14 +639,11 @@ function tryCreateV2Plugin() {
   return { id: "smapira.daily-logbook", setup: v2Setup, effect: v2Setup };
 }
 var DailyLogbookPluginV2 = tryCreateV2Plugin();
-var _hybridDefault = (() => {
-  const fn = DailyLogbookPlugin;
-  fn["id"] = "smapira.daily-logbook";
-  fn["setup"] = v2Setup;
-  fn["effect"] = v2Setup;
-  return fn;
-})();
-var daily_logbook_default = _hybridDefault;
+var daily_logbook_default = {
+  id: "smapira.daily-logbook",
+  setup: v2Setup,
+  effect: v2Setup
+};
 export {
   replaceTemplateVariables,
   maskSecrets,

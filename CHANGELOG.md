@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.5 - fix: make default object for V2 host (2026-09-03)
+
+### Fixed
+- **V2 ホストでの `Expected object` 解消**: `2.0.4` の `_hybridDefault` は `DailyLogbookPlugin` 関数に `id`/`setup`/`effect` を付与した callable だったが、`opencode2` の `PluginModule` は `default` を `object` として検証するため `Expected object at ["default"]` で `failed to load plugin` になっていた。`export default` を `{id, setup: v2Setup, effect: v2Setup}` のオブジェクトに変更し、V2ホストで `id`/`setup`/`effect` 検証を通過するようにした。`DailyLogbookPlugin`（V1関数）は名前付き `export` として温存
+  - **注意**: `2.0.5` は `opencode2` 専用。`opencode` 1.18.27（V1ホストで `default` を関数として呼ぶ）では `default` がオブジェクトのため `TypeError` になる。V1利用者は `2.0.3` を使用するか、`opencode2` に移行してください。`dist` は 24.0 KB に再ビルド
+
 ## 2.0.4 - fix: support both subscribe styles for V2 host (2026-09-03)
 
 ### Fixed

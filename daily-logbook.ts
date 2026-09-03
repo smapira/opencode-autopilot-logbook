@@ -790,12 +790,8 @@ function tryCreateV2Plugin(): unknown {
 
 export const DailyLogbookPluginV2: unknown = tryCreateV2Plugin();
 
-const _hybridDefault: unknown = (() => {
-  const fn = DailyLogbookPlugin as unknown as Record<string, unknown> & typeof DailyLogbookPlugin;
-  (fn as Record<string, unknown>)["id"] = "smapira.daily-logbook";
-  (fn as Record<string, unknown>)["setup"] = v2Setup;
-  (fn as Record<string, unknown>)["effect"] = v2Setup;
-  return fn;
-})();
-
-export default _hybridDefault as unknown as typeof DailyLogbookPlugin | typeof DailyLogbookPluginV2;
+export default {
+  id: "smapira.daily-logbook",
+  setup: v2Setup,
+  effect: v2Setup,
+} as unknown as typeof DailyLogbookPlugin | typeof DailyLogbookPluginV2;

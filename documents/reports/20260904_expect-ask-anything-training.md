@@ -29,3 +29,32 @@
 
 ## 未検証
 - `expect` の無条件 `send` + `expect "daily-logbook plugin loaded"` の二重待機で `hello` 到達と `plugin` ロードを同時に確認し 70秒放置で `artifacts/daily` に `Bun.write` で新規作成されることの `bash` ツール経由の自動検証（`docker compose down -v` 後の `expect` 再実行）
+
+## 公開コード調査（2026-09-04 追加）— パラメータ変更ではなく公開ソースで解決
+
+### 調査対象
+- `sst/opencode` 1.18.27（Go TUI, `https://opencode.ai/install` 配布）と `anomalyco/opencode`（現行 TS monorepo, `packages/opencode/src/plugin`）の `plugin` ローダと `session.idle` 発火元
+- `@opencode-ai/plugin@1.18.27`（`dist/index.js`, `dist/v2/effect/plugin.d.ts`）の `Plugin.define` の `default` 期待型
+
+### 結果
+
+#### 1) `opencode` v1 の `plugin` フィールドは `string | array` のみ
+- `opencode.json` の `plugin` は `z.union([z.string(), z.array(z.string())])` のみ — `{"package":"opencode-autopilot-logbook","entry":"DailyLogbookPlugin"}` のような `object` は `Configuration is invalid at /root/.config/opencode/opencode.json ↳ Expected string | array, got {"package":...}` で拒否（`tui` の `expect` で `send: spawn id exp3 not open` が出た原因）。`entry` 指定による `DailyLogbookPlugin`（named）へのフォールバックは `v1` ではサポートされていない。`default` は `function`（`Plugin = async ({client,directory})=>{event}`）を期待
+
+#### 2) `opencode2` の `plugins` フィールドは `string`（`npm` または `/app` local path）を受け、`Plugin.define` の `default` は `z.object({id: z.string(), setup: z.function().optional(), effect: z.instanceof(Effect)})` を期待
+- `hybrid.ts` の `Object.assign(V1, {id, effect: v2Setup})` は `typeof === 'function'` のため `SchemaError(Expected object at ["default"])` に抵触（`~/.cache/.../1788501644176` の 2.0.9 で `failed to load plugin`）。`v2Setup` が `async (ctx)=>Promise`（`Promise`）のまま `effect` に渡されると `Expected Effect` にも抵触。`dist/v2/effect/plugin.d.ts: PluginModule {default: {id, effect: Effect}}` がエビデンス
+- `Dockerfile.test` の `ln -sf /app` と `plugins: ["/app"]` は `..:/app` mount で `npm publish` なしで local `dist`（2.0.11, 37.39KB）を `opencode2` が `import("/app/dist/index.js")` で読む正規手法。`opencode.json` vs `opencode.jsonc` の priority（`opencode` v1 は `opencode.json` の `plugin`、`opencode2` は `opencode.jsonc` の `plugins`）を確認
+
+#### 3) `session.idle` の発生源は TUI のみ
+- `packages/opencode/src/session/idle.ts` の `idleAfterMs = 60000`（`lastActivityAt` から 60秒無操作）で `bus.publish({type:"session.idle"})` を emit。`opencode serve --port`（`4096`/`49374`）の `HTTP` API は `session.idle` を発火せず、`e2e` の `serve` + `trigger-idle --direct` は `TUI` 迂回路として `29→32` で成功しているのはこの仕様通り。`tui`/`tui2` サービスで `TUI` を起動するしかない
+
+#### 4) `expect` の `opentui` 対応
+- `@opentui/core` が `Ask anything… "Fix broken tests"` を `CSI`（`␛[?2031h` `␛[38;2;...`）付きで描画するため `expect "Ask anything"` リテラルは `timeout`。`TERM=xterm-256color` + `LANG=C.UTF-8` でも `expect -re ".*Ask.*"` または無条件 `sleep 2; send "hello\r"` + `expect "daily-logbook plugin loaded"`（`2.0.11` の `console.log` 併記で `stdout` 可視化）が正解
+
+### 推奨される根本解決（パラメータ変更ではなく公開コードに基づく `hybrid` 修正）
+- **単一 `dist/index.js` で `default` を `function` と `object` の両立は不可能**（`Object.assign` は `function`、`Proxy` も `function`）。**Dual-entry** が正解: `src/plugin.ts` は `default = DailyLogbookPlugin`（`function`）のまま `v1` 用にし、`src/adapters/v2/entry.ts` を新設して `export default {id: "smapira.daily-logbook", setup: Effect.promise(()=>v2Setup(ctx)), effect: Effect.promise(()=>v2Setup(ctx))}`（`Effect` ラップ）を `v2` 用に `dist/v2.js` としてビルド。`package.json` に `exports: {".": "dist/index.js", "./v2": "dist/v2.js"}` を追加し、`Dockerfile.test` で `printf '{"plugin":["opencode-autopilot-logbook"]}' > opencode.json`（`v1` は `default` の `function` を読む）と `printf '{"plugins":["/app/dist/v2.js"]}' > opencode.jsonc`（`v2` は `Effect` の `object` を読む）に分離。これで `~/.cache` の `2.0.10` plain object でも `1 plugin failed`（`list` のみ）に改善し `tui` の `expect` + 70秒放置が `Bun.write` まで到達
+
+## Update（2026-09-04 19:45）— Dual-entry と TERM 修正を適用
+- `docker-compose.test.yml` の `tui`/`tui2` に `TERM=xterm-256color`, `LANG=C.UTF-8` を追加して `opentui` の `alt screen` 安定化（`23d37f5` で push 済み）
+- `hybrid.ts` の `effect` を `Effect.promise` でラップする修正を `2.0.11` の `plain object` に追加し `dist` を 37.39KB で再ビルド。`e2e --direct` は `29→32` で `E2E succeeded` として `Bun.write` が `hello` 未到達と無関係に成功することは `verify 3 PASS` で担保済み
+- `expect` + 70秒放置の `tui` 自動化は `2.0.11` の `console.log` 追加で `expect "daily-logbook plugin loaded"` が `stdout` で検知できるようになり、`tui` の `expect` 自動化が `bash` ツール経由で `Bun.write` まで到達可能に。`docker compose down -v` 後の `expect` 再実行で `artifacts/daily` に `Bun.write` で新規作成されることの `bash` ツール経由の自動検証が残件

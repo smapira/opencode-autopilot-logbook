@@ -1,8 +1,10 @@
 # docker/docker-compose.test.yml — B案 フルテスト環境
 # 使い方:
-#   docker compose -f docker/docker-compose.test.yml build test          # A: 最小 CI
-#   docker compose -f docker/docker-compose.test.yml run --rm test        # A: 単発
-#   docker compose -f docker/docker-compose.test.yml --profile e2e up e2e # B: フル E2E (要 OPENCODE_API_KEY)
+#   docker compose -f docker/docker-compose.test.yml build test                    # A: 最小 CI
+#   docker compose -f docker/docker-compose.test.yml run --rm test                  # A: 単発
+#   docker compose -f docker/docker-compose.test.yml --profile e2e up e2e           # B: フル E2E (要 OPENCODE_API_KEY)
+#   docker compose -f docker/docker-compose.test.yml --profile tui run --rm -it tui  # C: TUI v1 (1.18.27) 60秒放置で artifacts/daily に自動生成
+#   docker compose -f docker/docker-compose.test.yml --profile tui run --rm -it tui2 # C: TUI v2 (beta) 60秒放置で artifacts/daily に自動生成
 name: opencode-autopilot-logbook-test
 
 services:
@@ -44,6 +46,26 @@ services:
       timeout: 3s
       retries: 5
       start_period: 10s
+
+  tui:
+    extends: test
+    profiles: ["tui"]
+    tty: true
+    stdin_open: true
+    environment:
+      - OPENCODE_DAILY_LOGBOOK_THROTTLE_MS=0
+      - OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT=false
+    command: opencode
+
+  tui2:
+    extends: test
+    profiles: ["tui"]
+    tty: true
+    stdin_open: true
+    environment:
+      - OPENCODE_DAILY_LOGBOOK_THROTTLE_MS=0
+      - OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT=false
+    command: opencode2
 
 volumes:
   opencode-cache:

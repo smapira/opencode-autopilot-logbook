@@ -6,13 +6,15 @@ RUN apt-get update && apt-get install -y \
     git sqlite3 curl ca-certificates bash nodejs npm \
     && rm -rf /var/lib/apt/lists/*
 
-# opencode v1 (stable) + v2 (beta) を両方導入
-# npm パッケージは @opencode-ai/cli（バイナリは opencode）
-RUN npm i -g @opencode-ai/cli@1.18.27 @opencode-ai/plugin@1.18.27 || npm i -g @opencode-ai/cli @opencode-ai/plugin
-# v2: beta channel → 0.0.0-beta-18999（opencode2 エイリアスは手動作成）
+# opencode v1 (1.18.27) は sst 配布（npm にはない）→ install スクリプトで取得
+# v2 (beta) は npm @opencode-ai/cli@beta（バイナリ opencode2）
+RUN curl -fsSL https://opencode.ai/install | bash -s -- --version 1.18.27 || echo "opencode v1 install failed"
 RUN npm i -g @opencode-ai/cli@beta @opencode-ai/plugin@beta || true
-# 互換: opencode2 エイリアスが無ければ v1 バイナリをコピー
-RUN if ! command -v opencode2 >/dev/null 2>&1; then ln -sf $(command -v opencode) /usr/local/bin/opencode2 || ln -sf /usr/local/bin/opencode /usr/local/bin/opencode2; fi
+# パス調整: v1 は ~/.opencode/bin/opencode に入るので /usr/local/bin へリンク
+RUN if [ -f /root/.opencode/bin/opencode ]; then ln -sf /root/.opencode/bin/opencode /usr/local/bin/opencode; fi \
+ && if [ -f /root/.opencode/bin/opencode2 ]; then ln -sf /root/.opencode/bin/opencode2 /usr/local/bin/opencode2; fi \
+ && if ! command -v opencode2 >/dev/null 2>&1 && command -v opencode >/dev/null 2>&1; then ln -sf $(command -v opencode) /usr/local/bin/opencode2; fi \
+ && opencode --version 2>&1 | head; opencode2 --version 2>&1 | head || true
 
 WORKDIR /app
 
@@ -25,6 +27,16 @@ RUN bun install --frozen-lockfile || bun install
 
 # 本体
 COPY . .
+
+# Docker 内で opencode がプラグインを解決できるように /app を global node_modules にリンク
+# + グローバル config に plugins を注入（/app は host mount で上書きされるため global config を使用）
+# v1 は plugin（単数）、v2 は plugins（複数）で両方用意
+RUN mkdir -p /usr/local/lib/node_modules && ln -sf /app /usr/local/lib/node_modules/opencode-autopilot-logbook \
+ && mkdir -p /app/node_modules && ln -sf /app /app/node_modules/opencode-autopilot-logbook \
+ && mkdir -p /root/.config/opencode \
+ && printf '{"plugin":["opencode-autopilot-logbook"]}' > /root/.config/opencode/opencode.json \
+ && printf '{"plugins":["opencode-autopilot-logbook"]}' > /root/.config/opencode/opencode.jsonc \
+ && cat /root/.config/opencode/opencode.json && echo "---" && cat /root/.config/opencode/opencode.jsonc
 
 # ビルド & 品質ゲート（B案では E2E は profiles:e2e で別実行）
 RUN bun run build \

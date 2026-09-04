@@ -587,6 +587,7 @@ var DailyLogbookPlugin = async ({ client, directory }) => {
   await client.app.log({
     body: { service: SERVICE_NAME2, level: "info", message: "daily-logbook plugin loaded" }
   });
+  console.log("daily-logbook plugin loaded");
   return {
     event: async ({ event }) => {
       if (event.type !== "session.idle")
@@ -907,7 +908,9 @@ function buildV2FallbackHook(fallbackSession, sink, directory) {
   };
 }
 async function logV2Startup(sink, anyCtx, ctxKeys, hasEventSubscribe, hasClientEventSubscribe, hasSession, isV1Host) {
-  await sink.info?.(`daily-logbook plugin loaded (v2) app=${anyCtx.app?.name ?? "unknown"} ${anyCtx.app?.version ?? ""} ctxKeys=[${ctxKeys}] event.subscribe=${hasEventSubscribe ? "yes" : "no"} client.event.subscribe=${hasClientEventSubscribe ? "yes" : "no"} session=${hasSession ? "yes" : "no"}${isV1Host ? " [V1 host detected via Orca shared \u2014 delegating to V1]" : ""}`);
+  const v2Message = `daily-logbook plugin loaded (v2) app=${anyCtx.app?.name ?? "unknown"} ${anyCtx.app?.version ?? ""} ctxKeys=[${ctxKeys}] event.subscribe=${hasEventSubscribe ? "yes" : "no"} client.event.subscribe=${hasClientEventSubscribe ? "yes" : "no"} session=${hasSession ? "yes" : "no"}${isV1Host ? " [V1 host detected via Orca shared \u2014 delegating to V1]" : ""}`;
+  await sink.info?.(v2Message);
+  console.log(v2Message);
   if (isV1Host) {
     await sink.warn("v2Setup called on V1 host (ctxKeys without event/session). This is Orca shared's plugins being loaded by opencode 1.18.x. Daily-logbook will be handled by V1 DailyLogbookPlugin, not v2. Skipping v2 event setup.");
   }

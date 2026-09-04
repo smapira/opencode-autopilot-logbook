@@ -118,9 +118,10 @@ async function logV2Startup(
   hasSession: boolean,
   isV1Host: boolean,
 ): Promise<void> {
-  await sink.info?.(
-    `daily-logbook plugin loaded (v2) app=${anyCtx.app?.name ?? "unknown"} ${anyCtx.app?.version ?? ""} ctxKeys=[${ctxKeys}] event.subscribe=${hasEventSubscribe ? "yes" : "no"} client.event.subscribe=${hasClientEventSubscribe ? "yes" : "no"} session=${hasSession ? "yes" : "no"}${isV1Host ? " [V1 host detected via Orca shared — delegating to V1]" : ""}`,
-  );
+  const v2Message = `daily-logbook plugin loaded (v2) app=${anyCtx.app?.name ?? "unknown"} ${anyCtx.app?.version ?? ""} ctxKeys=[${ctxKeys}] event.subscribe=${hasEventSubscribe ? "yes" : "no"} client.event.subscribe=${hasClientEventSubscribe ? "yes" : "no"} session=${hasSession ? "yes" : "no"}${isV1Host ? " [V1 host detected via Orca shared — delegating to V1]" : ""}`;
+  await sink.info?.(v2Message);
+  // CLI visibility for expect stdout detection (2.0.11): also emit to stdout
+  console.log(v2Message);
   if (isV1Host) {
     await sink.warn(
       "v2Setup called on V1 host (ctxKeys without event/session). This is Orca shared's plugins being loaded by opencode 1.18.x. Daily-logbook will be handled by V1 DailyLogbookPlugin, not v2. Skipping v2 event setup.",

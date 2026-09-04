@@ -5,6 +5,20 @@
 ### Deprecated
 - `daily-logbook.ts` is now a 2-line facade (`export * from "./src/plugin"` + `export { default }`) kept only for `from "../daily-logbook"` backward compatibility (Strangler Fig). It will be **removed in 3.0.0**; migrate to `from "./src/plugin"` or the package entry `dist/index.js` (`main`). Until then `from "../daily-logbook"` continues to re-export the full public API (no break).
 
+## 2.0.11 - fix: plain object default + console.log + DB separation (2026-09-04)
+
+### Fixed
+- **hybrid `default` を plain object に固定**: `2.0.9` の `Object.assign` ハイブリッドは `typeof === 'function'` のため `opencode2` beta-19059 で `SchemaError(Expected object at ["default"])` で `failed to load plugin`。「default は plain object `{id,setup,effect}`、V1 は `DailyLogbookPlugin` (named) で呼ぶ」に分離。`verify-diagnostic-logs` V1 は `DailyLogbookPlugin` (named) を使用
+- **CLI 可視化の `console.log` 併記**: `sink.info` はログファイルのみのため `expect "daily-logbook plugin loaded"` が stdout で検知できない。`v1/plugin.v1.ts` / `v2/plugin.v2.ts` に `console.log` を併記し tui の expect 70s放置で stdout 検知可能に
+- **tui expect 70s を無条件送信に**: `expect "Ask anything"` が opentui エスケープでマッチせず `hello` 未到達で session 未生成。`sleep 2; send "hello\r"` の無条件送信と `OPENCODE_API_KEY=${OPENCODE_API_KEY}` の tui/tui2 env 注入、`DAILY_LIMIT false` / `THROTTLE 0` で rm 後の `Bun.write` 新規作成を検証
+- **DB 分離**: `opencode-data` 共用で `Database is not empty and has no session table` (v1 serve が v2形式DBを読込)。`opencode-data-v1` / `opencode-data-v2` に分離し `tui`/`tui2` で `XDG_DATA_HOME=/tmp/opencode-v1|v2` も付与
+- **キャッシュ同期**: `docker compose down -v` で `opencode-cache` ボリュームを削除して `2.0.11` の plain object + console.log が `~/.cache` に反映されるようにする。`dist` は 37KB (20 modules) に再ビルド、`verify 3 PASS` 維持
+
+## 2.0.10 - fix: plain object default for opencode2 SchemaError (2026-09-04)
+
+### Fixed
+- **hybrid `default` を plain object に**: `2.0.9` の `Object.assign` ハイブリッドが `typeof === 'function'` のため `opencode2` で `SchemaError`。`src/adapters/hybrid.ts` で `default` を `{id,setup,effect}` の plain object にし、`DailyLogbookPlugin` (named) を V1 callable として分離。`verify-diagnostic-logs` V1 は `DailyLogbookPlugin` (named) を使用
+
 ## 2.0.9 - fix: V1/V2 hybrid and Orca shared delegation (2026-09-04)
 
 ### Fixed

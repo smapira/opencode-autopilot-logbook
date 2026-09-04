@@ -9,6 +9,8 @@ export const DailyLogbookPlugin: Plugin = async ({ client, directory }) => {
   await client.app.log({
     body: { service: SERVICE_NAME, level: "info", message: "daily-logbook plugin loaded" },
   });
+  // CLI visibility for expect stdout detection (2.0.11): sink.info goes to log file, console.log to stdout
+  console.log("daily-logbook plugin loaded");
   return {
     event: async ({ event }) => {
       if (event.type !== "session.idle") return;

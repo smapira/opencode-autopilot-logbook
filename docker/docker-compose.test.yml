@@ -1,4 +1,4 @@
-# docker/docker-compose.test.yml — B案 フルテスト環境
+# docker/docker-compose.test.yml — B案 フルテスト環境 (local dist via ..:/app mount, no publish)
 # 使い方:
 #   docker compose -f docker/docker-compose.test.yml build test                    # A: 最小 CI
 #   docker compose -f docker/docker-compose.test.yml run --rm test                  # A: 単発
@@ -6,7 +6,10 @@
 #   docker compose -f docker/docker-compose.test.yml --profile tui run --rm -it tui  # C: TUI v1 (1.18.27) 60秒放置で artifacts/daily に自動生成
 #   docker compose -f docker/docker-compose.test.yml --profile tui run --rm -it tui2 # C: TUI v2 (beta) 60秒放置で artifacts/daily に自動生成
 # TUI expect 自動化 (70s放置): opentui のエスケープで expect "Ask anything" がマッチしないため無条件送信にする
-#   docker compose -f docker/docker-compose.test.yml run --rm -T tui bash -c 'expect -c "spawn opencode; sleep 2; send \"hello\r\"; expect \"daily-logbook plugin loaded\"; sleep 70; exit 0"'
+#   docker compose -f docker/docker-compose.test.yml run --rm tui bash -c 'expect -c "set timeout 90; spawn opencode; sleep 2; send \"hello via tui 70s\r\"; expect \"daily-logbook plugin loaded\"; sleep 70; send \"exit\r\"; expect eof"'
+#   docker compose -f docker/docker-compose.test.yml run --rm test bash -c 'rm -f /app/artifacts/daily/20260904_logbook.md; OPENCODE_API_KEY=$OPENCODE_API_KEY expect -c '\''set timeout 90; spawn opencode2; sleep 2; send "hello\r"; sleep 70; send "exit\r"; expect eof'\'' && ls -lh /app/artifacts/daily/20260904_logbook.md'
+#   検証: docker compose -f docker/docker-compose.test.yml down -v && docker compose -f docker/docker-compose.test.yml run --rm test bash -c 'cat /root/.config/opencode/opencode.json; echo "---"; cat /root/.config/opencode/opencode.jsonc; echo "---"; ls -l /app/dist/index.js; wc -c /app/dist/index.js'
+#   plugins は /app (local dist) を直接参照、..:/app mount で publish 不要、~/.cache は down -v で削除、DB は XDG_DATA_HOME=/tmp/opencode-v1|v2 と volume 分離で Database is not empty 回避
 #   tui/tui2 は THROTTLE 0 / DAILY_LIMIT false / XDG_DATA_HOME 分離で rm 後の 0→Bun.write 新規作成を検証、OPENCODE_API_KEY を env に注入
 name: opencode-autopilot-logbook-test
 
@@ -23,6 +26,8 @@ services:
       - opencode-data-v1:/root/.local/share/opencode
     environment:
       - NODE_ENV=test
+      - OPENCODE_API_KEY=${OPENCODE_API_KEY}
+      - OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT=false
       - OPENCODE_DAILY_LOGBOOK_THROTTLE_MS=0
     command: bun test
 
@@ -61,6 +66,8 @@ services:
       - opencode-cache:/root/.cache/opencode
       - opencode-data-v1:/root/.local/share/opencode
     environment:
+      - TERM=xterm-256color
+      - LANG=C.UTF-8
       - OPENCODE_API_KEY=${OPENCODE_API_KEY}
       - OPENCODE_DAILY_LOGBOOK_THROTTLE_MS=0
       - OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT=false
@@ -79,6 +86,8 @@ services:
       - opencode-cache:/root/.cache/opencode
       - opencode-data-v2:/root/.local/share/opencode
     environment:
+      - TERM=xterm-256color
+      - LANG=C.UTF-8
       - OPENCODE_API_KEY=${OPENCODE_API_KEY}
       - OPENCODE_DAILY_LOGBOOK_THROTTLE_MS=0
       - OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT=false

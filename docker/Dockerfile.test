@@ -31,13 +31,15 @@ COPY . .
 # Docker 内で opencode がプラグインを解決できるように /app を global node_modules にリンク
 # + グローバル config に plugins を注入（/app は host mount で上書きされるため global config を使用）
 # v1 は plugin（単数）で entry:DailyLogbookPlugin を指定（default が plain object のため named で読む）
-# v2 は plugins（複数）で plain object default を読む
+# v2 は plugins（複数）で local dist を直接参照（publish 不要: ..:/app mount で /app/dist が利用可能）
+# expect/tmux are required for TUI 70s unconditional send verification
 RUN mkdir -p /usr/local/lib/node_modules && ln -sf /app /usr/local/lib/node_modules/opencode-autopilot-logbook \
  && mkdir -p /app/node_modules && ln -sf /app /app/node_modules/opencode-autopilot-logbook \
  && mkdir -p /root/.config/opencode \
  && printf '{"plugin":[{"package":"opencode-autopilot-logbook","entry":"DailyLogbookPlugin"}]}' > /root/.config/opencode/opencode.json \
- && printf '{"plugins":["opencode-autopilot-logbook"]}' > /root/.config/opencode/opencode.jsonc \
- && cat /root/.config/opencode/opencode.json && echo "---" && cat /root/.config/opencode/opencode.jsonc
+ && printf '{"plugins":["/app"]}' > /root/.config/opencode/opencode.jsonc \
+ && cat /root/.config/opencode/opencode.json && echo "---" && cat /root/.config/opencode/opencode.jsonc \
+ && ls -l /usr/local/lib/node_modules/opencode-autopilot-logbook /app/node_modules/opencode-autopilot-logbook 2>&1 | head
 
 # ビルド & 品質ゲート（B案では E2E は profiles:e2e で別実行）
 RUN bun run build \

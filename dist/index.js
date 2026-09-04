@@ -980,33 +980,59 @@ function extractSessionId(event) {
 }
 // src/adapters/hybrid.ts
 import { createRequire } from "module";
+function getEffectWrappedSetup() {
+  try {
+    const require2 = createRequire(import.meta.url);
+    const mod = require2("effect");
+    if (mod.Effect && typeof mod.Effect.promise === "function") {
+      return (ctx) => mod.Effect.promise(() => v2Setup(ctx));
+    }
+  } catch {}
+  return;
+}
+function loadDefine(spec) {
+  try {
+    const require2 = createRequire(import.meta.url);
+    const mod = require2(spec);
+    const define = mod?.Plugin?.define ?? mod?.define;
+    if (typeof define === "function")
+      return define;
+  } catch {}
+  return;
+}
 function tryCreateV2Plugin() {
-  const candidates = [
-    { spec: "@opencode-ai/plugin", kind: "setup" },
-    { spec: "@opencode-ai/plugin/v2/promise", kind: "setup" },
-    { spec: "@opencode-ai/plugin/v2/effect", kind: "effect" },
-    { spec: "@opencode-ai/plugin/effect", kind: "effect" }
-  ];
-  for (const { spec, kind } of candidates) {
-    try {
-      const require2 = createRequire(import.meta.url);
-      const mod = require2(spec);
-      const define = mod?.Plugin?.define ?? mod?.define;
-      if (typeof define === "function") {
-        if (kind === "setup")
-          return define({ id: "smapira.daily-logbook", setup: v2Setup });
-        return define({ id: "smapira.daily-logbook", effect: v2Setup });
-      }
-    } catch {}
+  const setupSpecs = ["@opencode-ai/plugin", "@opencode-ai/plugin/v2/promise"];
+  for (const spec of setupSpecs) {
+    const define = loadDefine(spec);
+    if (define) {
+      try {
+        return define({ id: "smapira.daily-logbook", setup: v2Setup });
+      } catch {}
+    }
   }
-  return { id: "smapira.daily-logbook", setup: v2Setup, effect: v2Setup };
+  const wrapped = getEffectWrappedSetup();
+  if (wrapped) {
+    const effectSpecs = ["@opencode-ai/plugin/v2/effect", "@opencode-ai/plugin/effect"];
+    for (const spec of effectSpecs) {
+      const define = loadDefine(spec);
+      if (define) {
+        try {
+          return define({ id: "smapira.daily-logbook", effect: wrapped });
+        } catch {}
+      }
+    }
+  }
+  return { id: "smapira.daily-logbook", setup: v2Setup };
 }
 var DailyLogbookPluginV2 = tryCreateV2Plugin();
-var hybridDefault = {
-  id: "smapira.daily-logbook",
-  setup: v2Setup,
-  effect: v2Setup
-};
+function createHybridDefault() {
+  const wrapped = getEffectWrappedSetup();
+  if (wrapped) {
+    return { id: "smapira.daily-logbook", setup: v2Setup, effect: wrapped };
+  }
+  return { id: "smapira.daily-logbook", setup: v2Setup };
+}
+var hybridDefault = createHybridDefault();
 var hybrid_default = hybridDefault;
 // src/plugin.ts
 var plugin_default = hybrid_default;

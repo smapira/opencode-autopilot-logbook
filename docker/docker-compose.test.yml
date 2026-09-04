@@ -1,0 +1,50 @@
+# docker/docker-compose.test.yml — B案 フルテスト環境
+# 使い方:
+#   docker compose -f docker/docker-compose.test.yml build test          # A: 最小 CI
+#   docker compose -f docker/docker-compose.test.yml run --rm test        # A: 単発
+#   docker compose -f docker/docker-compose.test.yml --profile e2e up e2e # B: フル E2E (要 OPENCODE_API_KEY)
+name: opencode-autopilot-logbook-test
+
+services:
+  test:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.test
+    image: opencode-autopilot-logbook:test
+    volumes:
+      - ..:/app
+      - /app/node_modules
+      - opencode-cache:/root/.cache/opencode
+      - opencode-data:/root/.local/share/opencode
+    environment:
+      - NODE_ENV=test
+      - OPENCODE_DAILY_LOGBOOK_THROTTLE_MS=0
+    command: bun test
+
+  test-watch:
+    extends: test
+    command: bun test --watch
+
+  e2e:
+    extends: test
+    profiles: ["e2e"]
+    environment:
+      - OPENCODE_API_KEY=${OPENCODE_API_KEY}
+      - E2E_MANUAL=1
+      - OPENCODE_DAILY_LOGBOOK_DAILY_LIMIT=false
+      - OPENCODE_DAILY_LOGBOOK_THROTTLE_MS=0
+    ports:
+      - "4096:4096"
+      - "49374:49374"
+    command: bash scripts/e2e-idle.sh
+    # e2e は LLM を呼ぶためタイムアウトを長めに
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4096/"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  opencode-cache:
+  opencode-data:

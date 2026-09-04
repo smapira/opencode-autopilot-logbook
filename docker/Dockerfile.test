@@ -1,0 +1,38 @@
+# docker/Dockerfile.test — B案 フル: bun + opencode v1/v2 + E2Eサーバ
+FROM oven/bun:1.3
+
+# 基礎
+RUN apt-get update && apt-get install -y \
+    git sqlite3 curl ca-certificates bash nodejs npm \
+    && rm -rf /var/lib/apt/lists/*
+
+# opencode v1 (stable) + v2 (beta) を両方導入
+# npm パッケージは @opencode-ai/cli（バイナリは opencode）
+RUN npm i -g @opencode-ai/cli@1.18.27 @opencode-ai/plugin@1.18.27 || npm i -g @opencode-ai/cli @opencode-ai/plugin
+# v2: beta channel → 0.0.0-beta-18999（opencode2 エイリアスは手動作成）
+RUN npm i -g @opencode-ai/cli@beta @opencode-ai/plugin@beta || true
+# 互換: opencode2 エイリアスが無ければ v1 バイナリをコピー
+RUN if ! command -v opencode2 >/dev/null 2>&1; then ln -sf $(command -v opencode) /usr/local/bin/opencode2 || ln -sf /usr/local/bin/opencode /usr/local/bin/opencode2; fi
+
+WORKDIR /app
+
+    # 依存の先行キャッシュ
+    COPY package.json package-lock.json tsconfig.json eslint.config.mjs ./
+COPY src/ src/
+COPY test/ test/
+COPY scripts/ scripts/
+RUN bun install --frozen-lockfile || bun install
+
+# 本体
+COPY . .
+
+# ビルド & 品質ゲート（B案では E2E は profiles:e2e で別実行）
+RUN bun run build \
+ && npx tsc --noEmit \
+ && npx eslint . \
+ && bun test \
+ && bun scripts/verify-diagnostic-logs.ts \
+ && npx madge --circular --extensions ts --warning . || echo "madge warnings ignored"
+
+# デフォルトは test watch（compose で上書き）
+CMD ["bun", "test", "--watch"]

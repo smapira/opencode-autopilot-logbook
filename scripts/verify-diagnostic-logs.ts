@@ -45,7 +45,8 @@ const cases: Case[] = [
     name: "V1: DailyLogbookPlugin が daily-logbook plugin loaded（v2なし）で event フックを返す",
     run: async () => {
       const mod = await import("../dist/index.js");
-      const def = mod.default as unknown as (input: unknown) => Promise<unknown>;
+      // default is now plain object for opencode2 (V2), V1 callable is DailyLogbookPlugin (named)
+      const def = (mod.DailyLogbookPlugin ?? mod.default) as unknown as (input: unknown) => Promise<unknown>;
       // V1 の client.app.log が診断ログを出すため、console だけでなく client.app.log も捕捉する
       const logs: string[] = [];
       const capture = (...args: unknown[]) => logs.push(args.map(String).join(" "));

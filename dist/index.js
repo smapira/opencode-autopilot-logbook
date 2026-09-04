@@ -999,11 +999,11 @@ function tryCreateV2Plugin() {
   return { id: "smapira.daily-logbook", setup: v2Setup, effect: v2Setup };
 }
 var DailyLogbookPluginV2 = tryCreateV2Plugin();
-var hybridDefault = Object.assign(DailyLogbookPlugin, {
+var hybridDefault = {
   id: "smapira.daily-logbook",
   setup: v2Setup,
   effect: v2Setup
-});
+};
 var hybrid_default = hybridDefault;
 // src/plugin.ts
 var plugin_default = hybrid_default;

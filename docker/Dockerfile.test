@@ -3,7 +3,7 @@ FROM oven/bun:1.3
 
 # 基礎
 RUN apt-get update && apt-get install -y \
-    git sqlite3 curl ca-certificates bash nodejs npm \
+    git sqlite3 curl ca-certificates bash nodejs npm expect tmux \
     && rm -rf /var/lib/apt/lists/*
 
 # opencode v1 (1.18.27) は sst 配布（npm にはない）→ install スクリプトで取得

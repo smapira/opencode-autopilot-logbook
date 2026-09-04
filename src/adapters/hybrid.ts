@@ -28,11 +28,15 @@ function tryCreateV2Plugin(): unknown {
 
 export const DailyLogbookPluginV2: unknown = tryCreateV2Plugin();
 
-const hybridDefault: unknown = Object.assign(V1, {
+// Hybrid default for npm package: plain object for opencode2 (expects object with id/effect),
+// while DailyLogbookPlugin (named) remains the V1 callable for opencode 1.18.27.
+// Object.assign on a function makes typeof === 'function', which fails opencode2's
+// SchemaError(Expected object at ["default"]). So default is a plain object.
+const hybridDefault: unknown = {
   id: "smapira.daily-logbook",
   setup: v2Setup,
   effect: v2Setup,
-});
+};
 
-export default hybridDefault as unknown as typeof V1 | typeof DailyLogbookPluginV2;
+export default hybridDefault as unknown as typeof DailyLogbookPluginV2;
 export { V1 as DailyLogbookPlugin };

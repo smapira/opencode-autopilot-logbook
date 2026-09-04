@@ -5,9 +5,14 @@
 #   docker compose -f docker/docker-compose.test.yml --profile e2e up e2e           # B: フル E2E (要 OPENCODE_API_KEY)
 #   docker compose -f docker/docker-compose.test.yml --profile tui run --rm -it tui  # C: TUI v1 (1.18.27) 60秒放置で artifacts/daily に自動生成
 #   docker compose -f docker/docker-compose.test.yml --profile tui run --rm -it tui2 # C: TUI v2 (beta) 60秒放置で artifacts/daily に自動生成
-# TUI expect 自動化 (70s放置): opentui のエスケープで expect "Ask anything" がマッチしないため無条件送信にする
-#   docker compose -f docker/docker-compose.test.yml run --rm tui bash -c 'expect -c "set timeout 90; spawn opencode; sleep 2; send \"hello via tui 70s\r\"; expect \"daily-logbook plugin loaded\"; sleep 70; send \"exit\r\"; expect eof"'
-#   docker compose -f docker/docker-compose.test.yml run --rm test bash -c 'rm -f /app/artifacts/daily/20260904_logbook.md; OPENCODE_API_KEY=$OPENCODE_API_KEY expect -c '\''set timeout 90; spawn opencode2; sleep 2; send "hello\r"; sleep 70; send "exit\r"; expect eof'\'' && ls -lh /app/artifacts/daily/20260904_logbook.md'
+# TUI expect 自動化 (70s放置): opentui のエスケープで expect "Ask anything" がマッチしないため tui-test で解消
+#   Microsoft tui-test (推奨, ローカルでは Ask anything PASS を確認):
+#     bash scripts/tui-test-idle.sh  # tui-test run opencode → expect "Ask anything" PASS → submit hello → 75s → artifacts 検証
+#     docker compose -f docker/docker-compose.test.yml run --rm test bash -c 'curl ... | TUI_TEST_VERSION=beta sh && tui-test run echo hello-docker && tui-test expect text "hello-docker"'
+#     # Docker の opencode TUI は tui-test の PTY で空白になるため (20260904 検証で FAIL)、Docker CI は e2e --direct を正とする
+#   従来の expect (無条件送信, 非推奨):
+#     docker compose -f docker/docker-compose.test.yml run --rm tui bash -c 'expect -c "set timeout 90; spawn opencode; sleep 2; send \"hello via tui 70s\r\"; expect \"daily-logbook plugin loaded\"; sleep 70; send \"exit\r\"; expect eof"'
+#     docker compose -f docker/docker-compose.test.yml run --rm test bash -c 'rm -f /app/artifacts/daily/20260904_logbook.md; OPENCODE_API_KEY=$OPENCODE_API_KEY expect -c '\''set timeout 90; spawn opencode2; sleep 2; send "hello\r"; sleep 70; send "exit\r"; expect eof'\'' && ls -lh /app/artifacts/daily/20260904_logbook.md'
 #   検証: docker compose -f docker/docker-compose.test.yml down -v && docker compose -f docker/docker-compose.test.yml run --rm test bash -c 'cat /root/.config/opencode/opencode.json; echo "---"; cat /root/.config/opencode/opencode.jsonc; echo "---"; ls -l /app/dist/index.js; wc -c /app/dist/index.js'
 #   plugins は /app (local dist) を直接参照、..:/app mount で publish 不要、~/.cache は down -v で削除、DB は XDG_DATA_HOME=/tmp/opencode-v1|v2 と volume 分離で Database is not empty 回避
 #   tui/tui2 は THROTTLE 0 / DAILY_LIMIT false / XDG_DATA_HOME 分離で rm 後の 0→Bun.write 新規作成を検証、OPENCODE_API_KEY を env に注入

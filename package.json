@@ -43,5 +43,8 @@
     "type": "git",
     "url": "https://github.com/smapira/opencode-autopilot-logbook.git"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "opencode-autopilot-logbook": "^2.0.11"
+  }
 }

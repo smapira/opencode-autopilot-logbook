@@ -1,10 +1,13 @@
 # docker/Dockerfile.test — B案 フル: bun + opencode v1/v2 + E2Eサーバ
 FROM oven/bun:1.3
 
-# 基礎
+# 基礎 + tui-test (Microsoft) で expect の CSI 問題を解消 — tui-test は PTY で ANSI を正しく解釈し "Ask anything" を文字で expect できる
 RUN apt-get update && apt-get install -y \
     git sqlite3 curl ca-certificates bash nodejs npm expect tmux \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+ && curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/microsoft/tui-test/main/install/install.sh | TUI_TEST_VERSION=beta sh \
+ && if [ -f /root/.local/bin/tui-test ]; then ln -sf /root/.local/bin/tui-test /usr/local/bin/tui-test; fi \
+ && tui-test --version 2>&1 | head
 
 # opencode v1 (1.18.27) は sst 配布（npm にはない）→ install スクリプトで取得
 # v2 (beta) は npm @opencode-ai/cli@beta（バイナリ opencode2）

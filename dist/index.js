@@ -1073,9 +1073,9 @@ var DailyLogbookPluginV2 = tryCreateV2Plugin();
 function createHybridDefault() {
   const wrapped = getEffectWrappedSetup();
   if (wrapped) {
-    return { id: "smapira.daily-logbook", setup: v2Setup, effect: wrapped };
+    return Object.assign(DailyLogbookPlugin, { id: "smapira.daily-logbook", setup: v2Setup, effect: wrapped });
   }
-  return { id: "smapira.daily-logbook", setup: v2Setup };
+  return Object.assign(DailyLogbookPlugin, { id: "smapira.daily-logbook", setup: v2Setup });
 }
 var hybridDefault = createHybridDefault();
 var hybrid_default = hybridDefault;

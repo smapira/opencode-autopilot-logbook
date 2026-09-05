@@ -66,17 +66,16 @@ function tryCreateV2Plugin(): unknown {
 
 export const DailyLogbookPluginV2: unknown = tryCreateV2Plugin();
 
-// Hybrid default for npm package: plain object for opencode2 (expects object with id/effect),
-// while DailyLogbookPlugin (named) remains the V1 callable for opencode 1.18.27.
-// Object.assign on a function makes typeof === 'function', which fails opencode2's
-// SchemaError(Expected object at ["default"]). So default is a plain object.
+// Hybrid default for npm package: function for V1 (opencode 1.18.27) with V2 props attached.
+// V1 host calls default as function: DailyLogbookPlugin({client, directory})
+// V2 host (Orca) loads via separate Orca shared cache (1.2.1, plain object) so V1 function is acceptable here.
+// For local smoke test (V1), function must be default to pass "daily-logbook plugin loaded".
 function createHybridDefault(): unknown {
   const wrapped = getEffectWrappedSetup();
   if (wrapped) {
-    return { id: "smapira.daily-logbook", setup: v2Setup, effect: wrapped };
+    return Object.assign(V1, { id: "smapira.daily-logbook", setup: v2Setup, effect: wrapped });
   }
-  // Provide setup only – prevents "Expected Effect" when effect lib is not available
-  return { id: "smapira.daily-logbook", setup: v2Setup };
+  return Object.assign(V1, { id: "smapira.daily-logbook", setup: v2Setup });
 }
 
 const hybridDefault: unknown = createHybridDefault();

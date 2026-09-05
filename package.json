@@ -13,7 +13,7 @@
   "scripts": {
     "build": "bun build src/plugin.ts --target=bun --outfile dist/index.js",
     "prepublishOnly": "bun run build",
-    "test": "bun test"
+    "test": "bun test --path-ignore-patterns vendor"
   },
   "engines": {
     "node": ">=18.0.0"
@@ -43,8 +43,5 @@
     "type": "git",
     "url": "https://github.com/smapira/opencode-autopilot-logbook.git"
   },
-  "license": "MIT",
-  "dependencies": {
-    "opencode-autopilot-logbook": "^2.0.11"
-  }
+  "license": "MIT"
 }

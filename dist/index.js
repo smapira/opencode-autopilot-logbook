@@ -569,6 +569,40 @@ function createV1LogSink(client) {
 }
 
 // src/adapters/v1/session.v1.ts
+async function createV1FallbackSessionPort(sink, directory) {
+  await sink.info?.(`v1: using file-direct fallback session adapter directory=${directory}`);
+  return {
+    get: async () => ({ data: { title: "fallback" } }),
+    getMessages: async () => ({ data: [] }),
+    create: async (title) => ({ data: { id: `fallback-v1-${Date.now()}` }, title }),
+    prompt: async (_id, text) => {
+      await writeDirectFileV1(text, sink, directory);
+      return {};
+    }
+  };
+}
+async function writeDirectFileV1(text, sink, directory) {
+  try {
+    const match = text.match(/Create `([^`]+)`/);
+    const filePath = match ? match[1] : `artifacts/daily/${new Date().toISOString().slice(0, 10).replace(/-/g, "")}_logbook.md`;
+    const { writeFileSync, mkdirSync, existsSync: existsSync3, readFileSync: readFileSync2 } = await import("fs");
+    const { resolve: resolve5, dirname, isAbsolute } = await import("path");
+    const absPath = isAbsolute(filePath) ? filePath : resolve5(directory, filePath);
+    mkdirSync(dirname(absPath), { recursive: true });
+    const existing = existsSync3(absPath) ? readFileSync2(absPath, "utf-8") : "";
+    const content = `${existing ? existing + `
+
+` : ""}# Daily Logbook ${new Date().toISOString().slice(0, 10)}
+
+${text.slice(0, 2000)}
+`;
+    writeFileSync(absPath, content);
+    await sink.info?.(`v1 fallback direct write to ${absPath}`);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    await sink.warn(`v1 fallback direct write failed: ${msg}`);
+  }
+}
 function createV1SessionPort(client) {
   return {
     get: (id) => client.session.get({ path: { id } }),
@@ -583,6 +617,17 @@ function createV1SessionPort(client) {
 
 // src/adapters/v1/plugin.v1.ts
 var SERVICE_NAME2 = "daily-logbook-plugin";
+async function handleV1IdleEvent(params) {
+  await generateDailyLogbookCore({
+    sessionId: params.sessionID,
+    directory: params.directory,
+    sink: params.sink,
+    adapter: params.session
+  });
+}
+async function createV1FallbackAdapter(sink, directory) {
+  return createV1FallbackSessionPort(sink, directory);
+}
 var DailyLogbookPlugin = async ({ client, directory }) => {
   await client.app.log({
     body: { service: SERVICE_NAME2, level: "info", message: "daily-logbook plugin loaded" }
@@ -645,25 +690,25 @@ function toSessionPort(session) {
     }
   };
 }
-async function createFallbackSessionAdapter(sink, _serverUrl) {
-  await sink.info?.("using file-direct fallback session adapter (no SDK)");
+async function createFallbackSessionAdapter(sink, _serverUrl, directory = process.cwd()) {
+  await sink.info?.(`using file-direct fallback session adapter (no SDK) directory=${directory}`);
   return {
     get: async () => ({ data: { title: "fallback" } }),
     context: async () => ({ data: [] }),
     create: async (input) => ({ data: { id: `fallback-${Date.now()}` }, title: input.title }),
     prompt: async (input) => {
-      await writeDirectFile(input.text, sink);
+      await writeDirectFile(input.text, sink, directory);
       return {};
     }
   };
 }
-async function writeDirectFile(text, sink) {
+async function writeDirectFile(text, sink, directory) {
   try {
     const match = text.match(/Create `([^`]+)`/);
     const filePath = match ? match[1] : `artifacts/daily/${new Date().toISOString().slice(0, 10).replace(/-/g, "")}_logbook.md`;
     const { writeFileSync, mkdirSync, existsSync: existsSync3, readFileSync: readFileSync2 } = await import("fs");
-    const { resolve: resolve5, dirname } = await import("path");
-    const absPath = resolve5(process.cwd(), filePath);
+    const { resolve: resolve5, dirname, isAbsolute } = await import("path");
+    const absPath = isAbsolute(filePath) ? filePath : resolve5(directory, filePath);
     mkdirSync(dirname(absPath), { recursive: true });
     const existing = existsSync3(absPath) ? readFileSync2(absPath, "utf-8") : "";
     const content = `${existing ? existing + `
@@ -866,7 +911,7 @@ async function tryHandleEventHost(eventHost, anyCtx, sink, directory) {
   if (!eventHost?.subscribe)
     return;
   const controller = new AbortController;
-  const session = anyCtx.session ?? await createFallbackSessionAdapter(sink, anyCtx.serverUrl);
+  const session = anyCtx.session ?? await createFallbackSessionAdapter(sink, anyCtx.serverUrl, directory);
   if (!session) {
     await sink.warn("v2: no session adapter available (ctx.session missing and fallback failed); idle handling disabled");
     return;
@@ -882,7 +927,7 @@ async function tryHandleSdkFallback(sink, directory) {
   if (!sdkEventHost?.subscribe)
     return;
   await sink.info?.(`v2: using SDK fallback for event subscription via ${sdkFallback.url}`);
-  const fileSession = await createFallbackSessionAdapter(sink, null);
+  const fileSession = await createFallbackSessionAdapter(sink, null, directory);
   if (!fileSession) {
     await sink.warn("v2: SDK event fallback has no file session; idle handling disabled");
     return;
@@ -917,7 +962,7 @@ async function logV2Startup(sink, anyCtx, ctxKeys, hasEventSubscribe, hasClientE
 }
 async function handleFallbackHook(anyCtx, sink, directory, ctxKeys) {
   await sink.warn(`v2: ctx.event.subscribe not found (ctxKeys=[${ctxKeys}]); falling back to return {event} hook. If idle is still not delivered, use opencode (v1) with 2.0.3.`);
-  const fallbackSession = anyCtx.session ?? await createFallbackSessionAdapter(sink, anyCtx.serverUrl);
+  const fallbackSession = anyCtx.session ?? await createFallbackSessionAdapter(sink, anyCtx.serverUrl, directory);
   if (!fallbackSession) {
     await sink.warn("v2: no session adapter for fallback hook; idle handling disabled");
     return;
@@ -1053,6 +1098,7 @@ export {
   isDailyLogbookExists,
   isAsyncIterable,
   handleV2IdleEvent,
+  handleV1IdleEvent,
   getUsageStats,
   getThrottleWindowMs,
   getDbPath,
@@ -1066,6 +1112,8 @@ export {
   createV2LogSink,
   createV1SessionPort,
   createV1LogSink,
+  createV1FallbackSessionPort,
+  createV1FallbackAdapter,
   createFallbackSessionAdapter,
   createFallbackSdkClient,
   buildTranscript,

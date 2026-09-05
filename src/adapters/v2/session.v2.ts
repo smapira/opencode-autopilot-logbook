@@ -33,26 +33,27 @@ export function toSessionPort(session: V2SessionLike): SessionPort {
 export async function createFallbackSessionAdapter(
   sink: AppLogSink,
   _serverUrl: unknown,
+  directory = process.cwd(),
 ): Promise<V2SessionLike | undefined> {
-  await sink.info?.("using file-direct fallback session adapter (no SDK)");
+  await sink.info?.(`using file-direct fallback session adapter (no SDK) directory=${directory}`);
   return {
     get: async () => ({ data: { title: "fallback" } }),
     context: async () => ({ data: [] }),
     create: async (input: { title: string }) => ({ data: { id: `fallback-${Date.now()}` }, title: input.title }),
     prompt: async (input: { sessionID: string; text: string }) => {
-      await writeDirectFile(input.text, sink);
+      await writeDirectFile(input.text, sink, directory);
       return {};
     },
   } as unknown as V2SessionLike;
 }
 
-async function writeDirectFile(text: string, sink: AppLogSink): Promise<void> {
+async function writeDirectFile(text: string, sink: AppLogSink, directory: string): Promise<void> {
   try {
     const match = text.match(/Create `([^`]+)`/);
     const filePath = match ? match[1] : `artifacts/daily/${new Date().toISOString().slice(0, 10).replace(/-/g, "")}_logbook.md`;
     const { writeFileSync, mkdirSync, existsSync, readFileSync } = await import("node:fs");
-    const { resolve, dirname } = await import("node:path");
-    const absPath = resolve(process.cwd(), filePath);
+    const { resolve, dirname, isAbsolute } = await import("node:path");
+    const absPath = isAbsolute(filePath) ? filePath : resolve(directory, filePath);
     mkdirSync(dirname(absPath), { recursive: true });
     const existing = existsSync(absPath) ? readFileSync(absPath, "utf-8") : "";
     const content = `${existing ? existing + "\n\n" : ""}# Daily Logbook ${new Date().toISOString().slice(0, 10)}\n\n${text.slice(0, 2000)}\n`;

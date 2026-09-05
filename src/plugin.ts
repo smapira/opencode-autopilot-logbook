@@ -1,11 +1,11 @@
 // src/plugin.ts — build entry (Phase3)
 // Hybrid V1/V2 plugin is the public export; also re-export building blocks for tests.
 
-export { DailyLogbookPlugin } from "./adapters/v1/plugin.v1";
+export { DailyLogbookPlugin, handleV1IdleEvent, createV1FallbackAdapter } from "./adapters/v1/plugin.v1";
 export { handleV2IdleEvent, v2Setup, runV2EventLoop } from "./adapters/v2/plugin.v2";
 export { DailyLogbookPluginV2 } from "./adapters/hybrid";
 export { createV1LogSink } from "./adapters/v1/log-sink.v1";
-export { createV1SessionPort } from "./adapters/v1/session.v1";
+export { createV1SessionPort, createV1FallbackSessionPort } from "./adapters/v1/session.v1";
 export { createV2LogSink } from "./adapters/v2/log-sink.v2";
 export { createFallbackSessionAdapter, toSessionPort } from "./adapters/v2/session.v2";
 export type { V2SessionLike } from "./adapters/v2/session.v2";

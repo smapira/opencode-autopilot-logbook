@@ -64,7 +64,7 @@ async function tryHandleEventHost(
 ): Promise<(() => void) | undefined> {
   if (!eventHost?.subscribe) return undefined;
   const controller = new AbortController();
-  const session = (anyCtx.session as V2SessionLike | undefined) ?? (await createFallbackSessionAdapter(sink, anyCtx.serverUrl));
+  const session = (anyCtx.session as V2SessionLike | undefined) ?? (await createFallbackSessionAdapter(sink, anyCtx.serverUrl, directory));
   if (!session) {
     await sink.warn("v2: no session adapter available (ctx.session missing and fallback failed); idle handling disabled");
     return undefined;
@@ -79,7 +79,7 @@ async function tryHandleSdkFallback(sink: AppLogSink, directory: string): Promis
   const sdkEventHost = sdkFallback.client.event as unknown as { subscribe?: unknown } | undefined;
   if (!sdkEventHost?.subscribe) return undefined;
   await sink.info?.(`v2: using SDK fallback for event subscription via ${sdkFallback.url}`);
-  const fileSession = await createFallbackSessionAdapter(sink, null);
+  const fileSession = await createFallbackSessionAdapter(sink, null, directory);
   if (!fileSession) {
     await sink.warn("v2: SDK event fallback has no file session; idle handling disabled");
     return undefined;
@@ -136,7 +136,7 @@ async function handleFallbackHook(
   ctxKeys: string,
 ): Promise<{ event: (input: { event: { type: string; data?: unknown; properties?: unknown } }) => Promise<void> } | undefined> {
   await sink.warn(`v2: ctx.event.subscribe not found (ctxKeys=[${ctxKeys}]); falling back to return {event} hook. If idle is still not delivered, use opencode (v1) with 2.0.3.`);
-  const fallbackSession = (anyCtx.session as V2SessionLike | undefined) ?? (await createFallbackSessionAdapter(sink, anyCtx.serverUrl));
+  const fallbackSession = (anyCtx.session as V2SessionLike | undefined) ?? (await createFallbackSessionAdapter(sink, anyCtx.serverUrl, directory));
   if (!fallbackSession) {
     await sink.warn("v2: no session adapter for fallback hook; idle handling disabled");
     return undefined;

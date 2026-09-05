@@ -66,16 +66,16 @@ function tryCreateV2Plugin(): unknown {
 
 export const DailyLogbookPluginV2: unknown = tryCreateV2Plugin();
 
-// Hybrid default for npm package: function for V1 (opencode 1.18.27) with V2 props attached.
-// V1 host calls default as function: DailyLogbookPlugin({client, directory})
-// V2 host (Orca) loads via separate Orca shared cache (1.2.1, plain object) so V1 function is acceptable here.
-// For local smoke test (V1), function must be default to pass "daily-logbook plugin loaded".
+// Hybrid default for npm package: plain object for Orca V2 (expects object with id/setup).
+// V1 (1.18.27) needs function, V2 (Orca beta) needs object — single dist cannot satisfy both via typeof.
+// We prioritize Orca V2 (user is checking V2 auto-generation). V1 will be satisfied via named export DailyLogbookPlugin.
+// For V1 local, use `DailyLogbookPlugin` directly; default as object ensures V2 does not throw SchemaError(Expected object).
 function createHybridDefault(): unknown {
   const wrapped = getEffectWrappedSetup();
   if (wrapped) {
-    return Object.assign(V1, { id: "smapira.daily-logbook", setup: v2Setup, effect: wrapped });
+    return { id: "smapira.daily-logbook", setup: v2Setup, effect: wrapped };
   }
-  return Object.assign(V1, { id: "smapira.daily-logbook", setup: v2Setup });
+  return { id: "smapira.daily-logbook", setup: v2Setup };
 }
 
 const hybridDefault: unknown = createHybridDefault();

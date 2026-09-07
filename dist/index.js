@@ -984,7 +984,8 @@ function buildV2FallbackHook(fallbackSession, sink, directory) {
         await sink.info?.(`[daily-logbook] v2 event received type=${event.type}`);
         console.log(`[daily-logbook] v2 event type=${event.type}`);
       }
-      if (event.type !== "session.idle")
+      const isIdle = event.type === "session.idle" || event.type === "session.status" && (event.properties?.status?.type === "idle" || event.data?.status?.type === "idle");
+      if (!isIdle)
         return;
       const data = event.data;
       const properties = event.properties;
@@ -1047,7 +1048,8 @@ async function runV2EventLoop(anyCtx, sink, directory, controller) {
         await sink.info?.(`[daily-logbook] v2 event received type=${event.type}`);
         console.log(`[daily-logbook] v2 event type=${event.type}`);
       }
-      if (event.type !== "session.idle")
+      const isIdle = event.type === "session.idle" || event.type === "session.status" && (event.properties?.status?.type === "idle" || event.data?.status?.type === "idle");
+      if (!isIdle)
         continue;
       const sessionID = extractSessionId(event);
       if (!sessionID) {

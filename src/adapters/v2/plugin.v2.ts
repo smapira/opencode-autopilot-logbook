@@ -105,7 +105,8 @@ function buildV2FallbackHook(
         await sink.info?.(`[daily-logbook] v2 event received type=${event.type}`);
         console.log(`[daily-logbook] v2 event type=${event.type}`);
       }
-      if (event.type !== "session.idle") return;
+      const isIdle = event.type === "session.idle" || (event.type === "session.status" && ((event as { properties?: { status?: { type?: string } }; data?: { status?: { type?: string } } }).properties?.status?.type === "idle" || (event as { properties?: { status?: { type?: string } }; data?: { status?: { type?: string } } }).data?.status?.type === "idle"));
+      if (!isIdle) return;
       const data = (event as { data?: { sessionID?: string }; properties?: { sessionID?: string } }).data;
       const properties = (event as { data?: { sessionID?: string }; properties?: { sessionID?: string } }).properties;
       const sessionID = data?.sessionID ?? properties?.sessionID;
@@ -193,7 +194,8 @@ export async function runV2EventLoop(
         await sink.info?.(`[daily-logbook] v2 event received type=${event.type}`);
         console.log(`[daily-logbook] v2 event type=${event.type}`);
       }
-      if (event.type !== "session.idle") continue;
+      const isIdle = event.type === "session.idle" || (event.type === "session.status" && ((event as { properties?: { status?: { type?: string } }; data?: { status?: { type?: string } } }).properties?.status?.type === "idle" || (event as { properties?: { status?: { type?: string } }; data?: { status?: { type?: string } } }).data?.status?.type === "idle"));
+      if (!isIdle) continue;
       const sessionID = extractSessionId(event);
       if (!sessionID) {
         await sink.warn("session.idle event missing sessionID; skipping");

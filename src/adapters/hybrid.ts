@@ -66,16 +66,25 @@ function tryCreateV2Plugin(): unknown {
 
 export const DailyLogbookPluginV2: unknown = tryCreateV2Plugin();
 
-// Hybrid default for npm package: plain object for Orca V2 (expects object with id/setup).
-// V1 (1.18.27) needs function, V2 (Orca beta) needs object — single dist cannot satisfy both via typeof.
-// We prioritize Orca V2 (user is checking V2 auto-generation). V1 will be satisfied via named export DailyLogbookPlugin.
-// For V1 local, use `DailyLogbookPlugin` directly; default as object ensures V2 does not throw SchemaError(Expected object).
+// Hybrid default: must satisfy BOTH loaders with single dist.
+// - opencode (v1) loader expects default export { server: Plugin } (or legacy function)
+//   -> readV1Plugin checks `mod.default.server` is function
+// - Orca V2 (beta) expects default export { id, setup } (object) -> zod validates object
+// Single function cannot satisfy V2 (Expected object), single {id,setup} without server
+// fails V1 (must default export an object with server()). So we export object with BOTH.
 function createHybridDefault(): unknown {
   const wrapped = getEffectWrappedSetup();
+  const base: Record<string, unknown> = {
+    id: "smapira.daily-logbook",
+    // V1: opencode's readV1Plugin expects server() — wrap DailyLogbookPlugin function
+    server: V1,
+    // V2: Orca's Plugin.define shape expects setup (Promise) — provide directly
+    setup: v2Setup,
+  };
   if (wrapped) {
-    return { id: "smapira.daily-logbook", setup: v2Setup, effect: wrapped };
+    base.effect = wrapped;
   }
-  return { id: "smapira.daily-logbook", setup: v2Setup };
+  return base;
 }
 
 const hybridDefault: unknown = createHybridDefault();

@@ -617,6 +617,10 @@ function createV1SessionPort(client) {
 
 // src/adapters/v1/plugin.v1.ts
 var SERVICE_NAME2 = "daily-logbook-plugin";
+function isVerboseLogEnabled() {
+  const v = process.env.DAILY_LOGBOOK_DEBUG ?? process.env.DAILY_LOGBOOK_VERBOSE ?? process.env.DAILY_LOGBOOK_LOG_EVENTS;
+  return v === "1" || v === "true";
+}
 async function handleV1IdleEvent(params) {
   await generateDailyLogbookCore({
     sessionId: params.sessionID,
@@ -635,6 +639,24 @@ var DailyLogbookPlugin = async ({ client, directory }) => {
   console.log("daily-logbook plugin loaded");
   return {
     event: async ({ event }) => {
+      if (isVerboseLogEnabled()) {
+        const now = new Date().toISOString();
+        const raw = (() => {
+          try {
+            return JSON.stringify(event);
+          } catch {
+            return String(event);
+          }
+        })();
+        await client.app.log({
+          body: {
+            service: SERVICE_NAME2,
+            level: "info",
+            message: `[daily-logbook] event received type=${event?.type} time=${now} raw=${raw}`
+          }
+        });
+        console.log(`[daily-logbook] event type=${event?.type} time=${now} raw=${raw}`);
+      }
       if (event.type !== "session.idle")
         return;
       const sink = createV1LogSink(client);
@@ -897,6 +919,10 @@ function getV2CtxKeys(anyCtx) {
     return "unknown";
   }
 }
+function isVerboseLogEnabled2() {
+  const v = process.env.DAILY_LOGBOOK_DEBUG ?? process.env.DAILY_LOGBOOK_VERBOSE ?? process.env.DAILY_LOGBOOK_LOG_EVENTS;
+  return v === "1" || v === "true";
+}
 function detectV1Host(ctxKeys, hasEventSubscribe, hasSession) {
   try {
     return ctxKeys.includes("agent") && ctxKeys.includes("skill") && !hasEventSubscribe && !hasSession;
@@ -939,6 +965,10 @@ async function tryHandleSdkFallback(sink, directory) {
 function buildV2FallbackHook(fallbackSession, sink, directory) {
   return {
     event: async ({ event }) => {
+      if (isVerboseLogEnabled2()) {
+        await sink.info?.(`[daily-logbook] v2 event received type=${event.type}`);
+        console.log(`[daily-logbook] v2 event type=${event.type}`);
+      }
       if (event.type !== "session.idle")
         return;
       const data = event.data;
@@ -998,6 +1028,10 @@ async function runV2EventLoop(anyCtx, sink, directory, controller) {
       return;
     }
     for await (const event of iterable) {
+      if (isVerboseLogEnabled2()) {
+        await sink.info?.(`[daily-logbook] v2 event received type=${event.type}`);
+        console.log(`[daily-logbook] v2 event type=${event.type}`);
+      }
       if (event.type !== "session.idle")
         continue;
       const sessionID = extractSessionId(event);
@@ -1072,10 +1106,15 @@ function tryCreateV2Plugin() {
 var DailyLogbookPluginV2 = tryCreateV2Plugin();
 function createHybridDefault() {
   const wrapped = getEffectWrappedSetup();
+  const base = {
+    id: "smapira.daily-logbook",
+    server: DailyLogbookPlugin,
+    setup: v2Setup
+  };
   if (wrapped) {
-    return { id: "smapira.daily-logbook", setup: v2Setup, effect: wrapped };
+    base.effect = wrapped;
   }
-  return { id: "smapira.daily-logbook", setup: v2Setup };
+  return base;
 }
 var hybridDefault = createHybridDefault();
 var hybrid_default = hybridDefault;

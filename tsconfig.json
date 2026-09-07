@@ -14,7 +14,8 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "declaration": false,
-    "sourceMap": false
+    "sourceMap": true,
+    "inlineSources": true
   },
   "include": ["daily-logbook.ts", "src/**/*.ts", "test/**/*.ts", "daily-logbook.v2.ts"],
   "exclude": ["node_modules", "dist", ".opencode", ".cache"]

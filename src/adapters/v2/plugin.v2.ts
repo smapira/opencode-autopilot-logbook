@@ -44,6 +44,11 @@ function getV2CtxKeys(anyCtx: V2CtxLike): string {
   }
 }
 
+function isVerboseLogEnabled(): boolean {
+  const v = process.env.DAILY_LOGBOOK_DEBUG ?? process.env.DAILY_LOGBOOK_VERBOSE ?? process.env.DAILY_LOGBOOK_LOG_EVENTS;
+  return v === "1" || v === "true";
+}
+
 function detectV1Host(ctxKeys: string, hasEventSubscribe: boolean, hasSession: boolean): boolean {
   try {
     return ctxKeys.includes("agent") && ctxKeys.includes("skill") && !hasEventSubscribe && !hasSession;
@@ -96,6 +101,10 @@ function buildV2FallbackHook(
 ): { event: (input: { event: { type: string; data?: unknown; properties?: unknown } }) => Promise<void> } {
   return {
     event: async ({ event }: { event: { type: string; data?: unknown; properties?: unknown } }) => {
+      if (isVerboseLogEnabled()) {
+        await sink.info?.(`[daily-logbook] v2 event received type=${event.type}`);
+        console.log(`[daily-logbook] v2 event type=${event.type}`);
+      }
       if (event.type !== "session.idle") return;
       const data = (event as { data?: { sessionID?: string }; properties?: { sessionID?: string } }).data;
       const properties = (event as { data?: { sessionID?: string }; properties?: { sessionID?: string } }).properties;
@@ -179,7 +188,11 @@ export async function runV2EventLoop(
       );
       return;
     }
-    for await (const event of iterable as AsyncIterable<{ type: string; data?: unknown; properties?: unknown }>) {
+     for await (const event of iterable as AsyncIterable<{ type: string; data?: unknown; properties?: unknown }>) {
+      if (isVerboseLogEnabled()) {
+        await sink.info?.(`[daily-logbook] v2 event received type=${event.type}`);
+        console.log(`[daily-logbook] v2 event type=${event.type}`);
+      }
       if (event.type !== "session.idle") continue;
       const sessionID = extractSessionId(event);
       if (!sessionID) {

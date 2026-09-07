@@ -7,6 +7,11 @@ import { createV1FallbackSessionPort, createV1SessionPort } from "./session.v1";
 
 const SERVICE_NAME = "daily-logbook-plugin";
 
+function isVerboseLogEnabled(): boolean {
+  const v = process.env.DAILY_LOGBOOK_DEBUG ?? process.env.DAILY_LOGBOOK_VERBOSE ?? process.env.DAILY_LOGBOOK_LOG_EVENTS;
+  return v === "1" || v === "true";
+}
+
 export async function handleV1IdleEvent(params: {
   sessionID: string;
   directory: string;
@@ -36,6 +41,24 @@ export const DailyLogbookPlugin: Plugin = async ({ client, directory }) => {
   console.log("daily-logbook plugin loaded");
   return {
     event: async ({ event }) => {
+      if (isVerboseLogEnabled()) {
+        const now = new Date().toISOString();
+        const raw = (() => {
+          try {
+            return JSON.stringify(event);
+          } catch {
+            return String(event);
+          }
+        })();
+        await client.app.log({
+          body: {
+            service: SERVICE_NAME,
+            level: "info",
+            message: `[daily-logbook] event received type=${(event as { type?: unknown })?.type} time=${now} raw=${raw}`,
+          },
+        });
+        console.log(`[daily-logbook] event type=${(event as { type?: unknown })?.type} time=${now} raw=${raw}`);
+      }
       if (event.type !== "session.idle") return;
       const sink = createV1LogSink(client);
       const adapter = createV1SessionPort(client);

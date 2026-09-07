@@ -1006,15 +1006,6 @@ async function logV2Startup(sink, anyCtx, ctxKeys, hasEventSubscribe, hasClientE
     await sink.warn("v2Setup called on V1 host (ctxKeys without event/session). This is Orca shared's plugins being loaded by opencode 1.18.x. Daily-logbook will be handled by V1 DailyLogbookPlugin, not v2. Skipping v2 event setup.");
   }
 }
-async function handleFallbackHook(anyCtx, sink, directory, ctxKeys) {
-  await sink.warn(`v2: ctx.event.subscribe not found (ctxKeys=[${ctxKeys}]); falling back to return {event} hook. If idle is still not delivered, use opencode (v1) with 2.0.3.`);
-  const fallbackSession = anyCtx.session ?? await createFallbackSessionAdapter(sink, anyCtx.serverUrl, directory);
-  if (!fallbackSession) {
-    await sink.warn("v2: no session adapter for fallback hook; idle handling disabled");
-    return;
-  }
-  return buildV2FallbackHook(fallbackSession, sink, directory);
-}
 async function v2Setup(ctx) {
   const anyCtx = ctx;
   const directory = getV2Directory(anyCtx);
@@ -1028,13 +1019,29 @@ async function v2Setup(ctx) {
   if (isV1Host)
     return;
   const eventHost = resolveEventHost(anyCtx);
+  const cleanups = [];
   const hostResult = await tryHandleEventHost(eventHost, anyCtx, sink, directory);
   if (hostResult)
-    return hostResult;
-  const sdkResult = await tryHandleSdkFallback(sink, directory);
-  if (sdkResult)
-    return sdkResult;
-  return handleFallbackHook(anyCtx, sink, directory, ctxKeys);
+    cleanups.push(hostResult);
+  else {
+    const sdkResult = await tryHandleSdkFallback(sink, directory);
+    if (sdkResult)
+      cleanups.push(sdkResult);
+  }
+  const hookSession = anyCtx.session ?? await createFallbackSessionAdapter(sink, anyCtx.serverUrl, directory);
+  if (!hookSession) {
+    if (cleanups.length > 0)
+      return () => cleanups.forEach((fn) => fn());
+    await sink.warn("v2: no session adapter for fallback hook; idle handling disabled");
+    return;
+  }
+  const hook = buildV2FallbackHook(hookSession, sink, directory);
+  if (cleanups.length > 0) {
+    await sink.info?.(`v2: dual delivery enabled \u2014 subscribe loop + hook (cleanups=${cleanups.length})`);
+    return hook;
+  }
+  await sink.warn(`v2: ctx.event.subscribe not found (ctxKeys=[${ctxKeys}]); falling back to return {event} hook. If idle is still not delivered, use opencode (v1) with 2.0.3.`);
+  return hook;
 }
 async function runV2EventLoop(anyCtx, sink, directory, controller) {
   try {

@@ -167,12 +167,36 @@ export async function v2Setup(
   const isV1Host = detectV1Host(ctxKeys, hasEventSubscribe, hasSession);
   await logV2Startup(sink, anyCtx, ctxKeys, hasEventSubscribe, hasClientEventSubscribe, hasSession, isV1Host);
   if (isV1Host) return;
+  // Fix: v2 beta may deliver idle via hook even when event.subscribe exists.
+  // Previous code returned early with hostResult and never exposed the hook,
+  // so idle via hook was lost. Now start subscribe loop in background AND
+  // always expose the hook so both delivery paths work.
   const eventHost = resolveEventHost(anyCtx);
+  const cleanups: Array<() => void> = [];
   const hostResult = await tryHandleEventHost(eventHost, anyCtx, sink, directory);
-  if (hostResult) return hostResult;
-  const sdkResult = await tryHandleSdkFallback(sink, directory);
-  if (sdkResult) return sdkResult;
-  return handleFallbackHook(anyCtx, sink, directory, ctxKeys);
+  if (hostResult) cleanups.push(hostResult);
+  else {
+    const sdkResult = await tryHandleSdkFallback(sink, directory);
+    if (sdkResult) cleanups.push(sdkResult);
+  }
+  // Always build the hook (uses real ctx.session when available, fallback otherwise)
+  // so idle delivered via host's {event} hook is handled even when subscribe loop is active.
+  const hookSession = (anyCtx.session as V2SessionLike | undefined) ?? (await createFallbackSessionAdapter(sink, anyCtx.serverUrl, directory));
+  if (!hookSession) {
+    if (cleanups.length > 0) return () => cleanups.forEach((fn) => fn());
+    await sink.warn("v2: no session adapter for fallback hook; idle handling disabled");
+    return undefined;
+  }
+  const hook = buildV2FallbackHook(hookSession, sink, directory);
+  if (cleanups.length > 0) {
+    await sink.info?.(`v2: dual delivery enabled — subscribe loop + hook (cleanups=${cleanups.length})`);
+    // Return hook for host delivery; keep loop alive in background.
+    // Host that expects a cleanup function will still get hook; loop cleanup is kept alive until process exit.
+    // If host calls the returned hook's event, it will handle idle; subscribe loop also handles idle.
+    return hook;
+  }
+  await sink.warn(`v2: ctx.event.subscribe not found (ctxKeys=[${ctxKeys}]); falling back to return {event} hook. If idle is still not delivered, use opencode (v1) with 2.0.3.`);
+  return hook;
 }
 
 export async function runV2EventLoop(

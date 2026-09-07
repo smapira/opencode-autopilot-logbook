@@ -671,19 +671,34 @@ var DailyLogbookPlugin = async ({ client, directory }) => {
   };
 };
 // src/adapters/v2/log-sink.v2.ts
+import { appendFileSync, mkdirSync } from "fs";
+import { homedir as homedir2 } from "os";
+import { join as join2 } from "path";
 var SERVICE_NAME3 = "daily-logbook-plugin";
+function fileLog(level, message) {
+  try {
+    const dir = join2(homedir2(), ".local/share/opencode/opencode-data-v2/opencode/log");
+    mkdirSync(dir, { recursive: true });
+    const line = `[${new Date().toISOString()}] [${SERVICE_NAME3}] ${level}: ${message}
+`;
+    appendFileSync(join2(dir, "daily-logbook-v2.log"), line);
+  } catch {}
+}
 function createV2LogSink() {
   return {
     warn: (message) => {
       console.warn(`[${SERVICE_NAME3}] ${message}`);
+      fileLog("WARN", message);
     },
     error: (message, error) => {
       const msg = error instanceof Error ? error.message : error !== undefined ? String(error) : "";
       const full = msg ? `${message}: ${msg}` : message;
       console.error(`[${SERVICE_NAME3}] ${full}`);
+      fileLog("ERROR", full);
     },
     info: (message) => {
       console.log(`[${SERVICE_NAME3}] ${message}`);
+      fileLog("INFO", message);
     }
   };
 }
@@ -728,10 +743,10 @@ async function writeDirectFile(text, sink, directory) {
   try {
     const match = text.match(/Create `([^`]+)`/);
     const filePath = match ? match[1] : `artifacts/daily/${new Date().toISOString().slice(0, 10).replace(/-/g, "")}_logbook.md`;
-    const { writeFileSync, mkdirSync, existsSync: existsSync3, readFileSync: readFileSync2 } = await import("fs");
+    const { writeFileSync, mkdirSync: mkdirSync2, existsSync: existsSync3, readFileSync: readFileSync2 } = await import("fs");
     const { resolve: resolve5, dirname, isAbsolute } = await import("path");
     const absPath = isAbsolute(filePath) ? filePath : resolve5(directory, filePath);
-    mkdirSync(dirname(absPath), { recursive: true });
+    mkdirSync2(dirname(absPath), { recursive: true });
     const existing = existsSync3(absPath) ? readFileSync2(absPath, "utf-8") : "";
     const content = `${existing ? existing + `
 

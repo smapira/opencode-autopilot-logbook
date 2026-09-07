@@ -30,7 +30,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@opencode-ai/plugin": "^1.18.29",
+    "@opencode-ai/plugin": "^0.0.0-beta-19234",
     "@types/bun": "^1.4.0",
     "@types/node": "^26.4.1",
     "devtools-debugger-mcp": "^0.0.1",

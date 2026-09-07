@@ -1105,16 +1105,15 @@ function tryCreateV2Plugin() {
 }
 var DailyLogbookPluginV2 = tryCreateV2Plugin();
 function createHybridDefault() {
-  const wrapped = getEffectWrappedSetup();
-  const base = {
+  const v2 = DailyLogbookPluginV2;
+  if (v2 && typeof v2 === "object" && "id" in v2) {
+    return { ...v2, server: DailyLogbookPlugin };
+  }
+  return {
     id: "smapira.daily-logbook",
     server: DailyLogbookPlugin,
     setup: v2Setup
   };
-  if (wrapped) {
-    base.effect = wrapped;
-  }
-  return base;
 }
 var hybridDefault = createHybridDefault();
 var hybrid_default = hybridDefault;

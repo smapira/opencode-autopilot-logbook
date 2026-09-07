@@ -73,18 +73,20 @@ export const DailyLogbookPluginV2: unknown = tryCreateV2Plugin();
 // Single function cannot satisfy V2 (Expected object), single {id,setup} without server
 // fails V1 (must default export an object with server()). So we export object with BOTH.
 function createHybridDefault(): unknown {
-  const wrapped = getEffectWrappedSetup();
-  const base: Record<string, unknown> = {
+  // Use the properly defined V2 plugin (via Plugin.define) as base, then add server for V1.
+  // Plain {id,server,setup} fails V2's strict zod because V2 expects a Plugin.define result.
+  // DailyLogbookPluginV2 is already created via define({id,setup}) with beta.
+  const v2 = DailyLogbookPluginV2 as Record<string, unknown>;
+  if (v2 && typeof v2 === "object" && "id" in v2) {
+    // Clone and add server for V1 compatibility
+    return { ...v2, server: V1 };
+  }
+  // Fallback plain object if define failed
+  return {
     id: "smapira.daily-logbook",
-    // V1: opencode's readV1Plugin expects server() — wrap DailyLogbookPlugin function
     server: V1,
-    // V2: Orca's Plugin.define shape expects setup (Promise) — provide directly
     setup: v2Setup,
   };
-  if (wrapped) {
-    base.effect = wrapped;
-  }
-  return base;
 }
 
 const hybridDefault: unknown = createHybridDefault();

@@ -94,7 +94,7 @@ async function tryHandleSdkFallback(sink: AppLogSink, directory: string): Promis
   return () => controller.abort();
 }
 
-function buildV2FallbackHook(
+export function buildV2FallbackHook(
   fallbackSession: V2SessionLike,
   sink: AppLogSink,
   directory: string,
@@ -105,8 +105,7 @@ function buildV2FallbackHook(
         await sink.info?.(`[daily-logbook] v2 event received type=${event.type}`);
         console.log(`[daily-logbook] v2 event type=${event.type}`);
       }
-      const isIdle = event.type === "session.idle" || (event.type === "session.status" && ((event as { properties?: { status?: { type?: string } }; data?: { status?: { type?: string } } }).properties?.status?.type === "idle" || (event as { properties?: { status?: { type?: string } }; data?: { status?: { type?: string } } }).data?.status?.type === "idle"));
-      if (!isIdle) return;
+      if (!isIdleV2Event(event)) return;
       const data = (event as { data?: { sessionID?: string }; properties?: { sessionID?: string } }).data;
       const properties = (event as { data?: { sessionID?: string }; properties?: { sessionID?: string } }).properties;
       const sessionID = data?.sessionID ?? properties?.sessionID;
@@ -139,19 +138,19 @@ async function logV2Startup(
   }
 }
 
-async function handleFallbackHook(
-  anyCtx: V2CtxLike,
-  sink: AppLogSink,
-  directory: string,
-  ctxKeys: string,
-): Promise<{ event: (input: { event: { type: string; data?: unknown; properties?: unknown } }) => Promise<void> } | undefined> {
-  await sink.warn(`v2: ctx.event.subscribe not found (ctxKeys=[${ctxKeys}]); falling back to return {event} hook. If idle is still not delivered, use opencode (v1) with 2.0.3.`);
-  const fallbackSession = (anyCtx.session as V2SessionLike | undefined) ?? (await createFallbackSessionAdapter(sink, anyCtx.serverUrl, directory));
-  if (!fallbackSession) {
-    await sink.warn("v2: no session adapter for fallback hook; idle handling disabled");
-    return undefined;
-  }
-  return buildV2FallbackHook(fallbackSession, sink, directory);
+type V2EventLike = { type: string; data?: unknown; properties?: unknown };
+
+type V2StatusLike = { status?: { type?: string } };
+
+function readIdleStatus(event: V2EventLike): string | undefined {
+  const properties = (event as { properties?: V2StatusLike }).properties;
+  const data = (event as { data?: V2StatusLike }).data;
+  return properties?.status?.type ?? data?.status?.type;
+}
+
+export function isIdleV2Event(event: V2EventLike): boolean {
+  if (event.type === "session.idle") return true;
+  return event.type === "session.status" && readIdleStatus(event) === "idle";
 }
 
 export async function v2Setup(
@@ -218,8 +217,7 @@ export async function runV2EventLoop(
         await sink.info?.(`[daily-logbook] v2 event received type=${event.type}`);
         console.log(`[daily-logbook] v2 event type=${event.type}`);
       }
-      const isIdle = event.type === "session.idle" || (event.type === "session.status" && ((event as { properties?: { status?: { type?: string } }; data?: { status?: { type?: string } } }).properties?.status?.type === "idle" || (event as { properties?: { status?: { type?: string } }; data?: { status?: { type?: string } } }).data?.status?.type === "idle"));
-      if (!isIdle) continue;
+      if (!isIdleV2Event(event)) continue;
       const sessionID = extractSessionId(event);
       if (!sessionID) {
         await sink.warn("session.idle event missing sessionID; skipping");

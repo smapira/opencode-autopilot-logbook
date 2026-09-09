@@ -984,8 +984,7 @@ function buildV2FallbackHook(fallbackSession, sink, directory) {
         await sink.info?.(`[daily-logbook] v2 event received type=${event.type}`);
         console.log(`[daily-logbook] v2 event type=${event.type}`);
       }
-      const isIdle = event.type === "session.idle" || event.type === "session.status" && (event.properties?.status?.type === "idle" || event.data?.status?.type === "idle");
-      if (!isIdle)
+      if (!isIdleV2Event(event))
         return;
       const data = event.data;
       const properties = event.properties;
@@ -1005,6 +1004,16 @@ async function logV2Startup(sink, anyCtx, ctxKeys, hasEventSubscribe, hasClientE
   if (isV1Host) {
     await sink.warn("v2Setup called on V1 host (ctxKeys without event/session). This is Orca shared's plugins being loaded by opencode 1.18.x. Daily-logbook will be handled by V1 DailyLogbookPlugin, not v2. Skipping v2 event setup.");
   }
+}
+function readIdleStatus(event) {
+  const properties = event.properties;
+  const data = event.data;
+  return properties?.status?.type ?? data?.status?.type;
+}
+function isIdleV2Event(event) {
+  if (event.type === "session.idle")
+    return true;
+  return event.type === "session.status" && readIdleStatus(event) === "idle";
 }
 async function v2Setup(ctx) {
   const anyCtx = ctx;
@@ -1055,8 +1064,7 @@ async function runV2EventLoop(anyCtx, sink, directory, controller) {
         await sink.info?.(`[daily-logbook] v2 event received type=${event.type}`);
         console.log(`[daily-logbook] v2 event type=${event.type}`);
       }
-      const isIdle = event.type === "session.idle" || event.type === "session.status" && (event.properties?.status?.type === "idle" || event.data?.status?.type === "idle");
-      if (!isIdle)
+      if (!isIdleV2Event(event))
         continue;
       const sessionID = extractSessionId(event);
       if (!sessionID) {

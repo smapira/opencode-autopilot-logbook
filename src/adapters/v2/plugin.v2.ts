@@ -127,6 +127,8 @@ async function logV2Startup(
   hasSession: boolean,
   isV1Host: boolean,
 ): Promise<void> {
+  // V1 host loads this module via Orca shared — skip silently unless verbose
+  if (isV1Host && !isVerboseLogEnabled()) return;
   const v2Message = `daily-logbook plugin loaded (v2) app=${anyCtx.app?.name ?? "unknown"} ${anyCtx.app?.version ?? ""} ctxKeys=[${ctxKeys}] event.subscribe=${hasEventSubscribe ? "yes" : "no"} client.event.subscribe=${hasClientEventSubscribe ? "yes" : "no"} session=${hasSession ? "yes" : "no"}${isV1Host ? " [V1 host detected via Orca shared — delegating to V1]" : ""}`;
   await sink.info?.(v2Message);
   // CLI visibility for expect stdout detection (2.0.11): also emit to stdout

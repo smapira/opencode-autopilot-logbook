@@ -998,6 +998,8 @@ function buildV2FallbackHook(fallbackSession, sink, directory) {
   };
 }
 async function logV2Startup(sink, anyCtx, ctxKeys, hasEventSubscribe, hasClientEventSubscribe, hasSession, isV1Host) {
+  if (isV1Host && !isVerboseLogEnabled2())
+    return;
   const v2Message = `daily-logbook plugin loaded (v2) app=${anyCtx.app?.name ?? "unknown"} ${anyCtx.app?.version ?? ""} ctxKeys=[${ctxKeys}] event.subscribe=${hasEventSubscribe ? "yes" : "no"} client.event.subscribe=${hasClientEventSubscribe ? "yes" : "no"} session=${hasSession ? "yes" : "no"}${isV1Host ? " [V1 host detected via Orca shared \u2014 delegating to V1]" : ""}`;
   await sink.info?.(v2Message);
   console.log(v2Message);

@@ -2,7 +2,7 @@ import { mkdtemp, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "bun:test";
-import { buildV2FallbackHook } from "../src/adapters/v2/plugin.v2";
+import { buildV2FallbackHook, v2Setup } from "../src/adapters/v2/plugin.v2";
 import type { V2SessionLike } from "../src/adapters/v2/session.v2";
 import { createFallbackSessionAdapter } from "../src/adapters/v2/session.v2";
 import type { AppLogSink } from "../src/application/ports";
@@ -147,5 +147,40 @@ describe("v2 event dispatch (session.idle deprecated → session.status)", () =>
     expect(calls.create.length).toBe(0);
     expect(await dailyFiles(dir)).toEqual([]);
     expect(lines.some((l) => l.includes("missing sessionID"))).toBe(true);
+  });
+});
+
+describe("v1-host skip logging", () => {
+  test("silent by default, logged when DAILY_LOGBOOK_DEBUG=1", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "v1skip-"));
+    // v1 host shape: agent+skill keys, no event.subscribe, no session
+    const ctx = { directory: dir, agent: {}, skill: {} };
+    const out: string[] = [];
+    const origLog = console.log;
+    const origWarn = console.warn;
+    console.log = (...a: unknown[]) => void out.push(a.map(String).join(" "));
+    console.warn = (...a: unknown[]) => void out.push(a.map(String).join(" "));
+    const savedDebug = process.env.DAILY_LOGBOOK_DEBUG;
+    const savedVerbose = process.env.DAILY_LOGBOOK_VERBOSE;
+    const savedLogEvents = process.env.DAILY_LOGBOOK_LOG_EVENTS;
+    try {
+      delete process.env.DAILY_LOGBOOK_DEBUG;
+      delete process.env.DAILY_LOGBOOK_VERBOSE;
+      delete process.env.DAILY_LOGBOOK_LOG_EVENTS;
+      expect(await v2Setup(ctx)).toBeUndefined();
+      expect(out.filter((l) => l.includes("daily-logbook")).length).toBe(0);
+      process.env.DAILY_LOGBOOK_DEBUG = "1";
+      expect(await v2Setup(ctx)).toBeUndefined();
+      expect(out.some((l) => l.includes("V1 host detected"))).toBe(true);
+    } finally {
+      console.log = origLog;
+      console.warn = origWarn;
+      if (savedDebug === undefined) delete process.env.DAILY_LOGBOOK_DEBUG;
+      else process.env.DAILY_LOGBOOK_DEBUG = savedDebug;
+      if (savedVerbose === undefined) delete process.env.DAILY_LOGBOOK_VERBOSE;
+      else process.env.DAILY_LOGBOOK_VERBOSE = savedVerbose;
+      if (savedLogEvents === undefined) delete process.env.DAILY_LOGBOOK_LOG_EVENTS;
+      else process.env.DAILY_LOGBOOK_LOG_EVENTS = savedLogEvents;
+    }
   });
 });

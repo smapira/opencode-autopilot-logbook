@@ -10,7 +10,7 @@
  *
  * 検証項目:
  * 1. V1 呼び出しで "daily-logbook plugin loaded"（v2 なし）が出ること
- * 2. V2 beta（ctxKeys 9要素、eventなし）で "[V1 host detected" が出てスキップされること
+ * 2. event経路なしのctxでは値を返さずstdoutは常にsilent（記録はファイルのみ）であること
  * 3. V2 SDK フォールバック（49374）で "using SDK fallback" と "toAsyncIterable => AsyncIterable" が出ること
  */
 
@@ -97,17 +97,17 @@ const cases: Case[] = [
     },
   },
   {
-    name: "V2 beta（Orca shared経由の9要素）で V1 host 検出してスキップ（通常はsilent、verbose時のみログ）",
+    name: "V2 setupにevent経路なし：値を返さずstdoutは常にsilent（記録はファイルのみ）",
     run: async () => {
       const mod = await import("../dist/index.js");
       const def = mod.default as unknown as { setup: (ctx: unknown) => Promise<unknown> };
-      const mockBeta = { agent: {}, aisdk: {}, catalog: {}, command: {}, integration: {}, options: {}, plugin: {}, reference: {}, skill: {} };
-      const quiet = await captureConsole(async () => def.setup(mockBeta));
+      const mockNoCap = { agent: {}, aisdk: {}, catalog: {}, command: {}, integration: {}, options: {}, plugin: {}, reference: {}, skill: {} };
+      const quiet = await captureConsole(async () => def.setup(mockNoCap));
       const procEnv = (globalThis as unknown as { process: { env: Record<string, string | undefined> } }).process.env;
       procEnv.DAILY_LOGBOOK_DEBUG = "1";
       let loud: { logs: string[]; result: unknown };
       try {
-        loud = await captureConsole(async () => def.setup(mockBeta));
+        loud = await captureConsole(async () => def.setup(mockNoCap));
       } finally {
         delete procEnv.DAILY_LOGBOOK_DEBUG;
       }
@@ -119,17 +119,14 @@ const cases: Case[] = [
       if (logs.some((l) => l.includes("daily-logbook"))) {
         return { pass: false, reason: `通常時にログが出た: ${logs.join(" | ").slice(0, 200)}` };
       }
-      const hasV2Log = r.loud.some((l) => l.includes("daily-logbook plugin loaded (v2)") && l.includes("ctxKeys=[agent,aisdk"));
-      const hasV1Detect = r.loud.some((l) => l.includes("V1 host detected via Orca shared"));
-      const hasSkip = r.loud.some((l) => l.includes("Skipping v2 event setup"));
-      if (!hasV2Log) return { pass: false, reason: "verbose時にv2ログ（ctxKeys）なし" };
-      if (!hasV1Detect) return { pass: false, reason: "verbose時にV1 host検出ログなし" };
-      if (!hasSkip) return { pass: false, reason: "verbose時にSkippingログなし" };
+      if (r.loud.some((l) => l.includes("daily-logbook"))) {
+        return { pass: false, reason: `verbose時もstdoutはsilentのはず: ${r.loud.join(" | ").slice(0, 200)}` };
+      }
       return { pass: true };
     },
   },
   {
-    name: "V2 SDK フォールバック（49374）で AsyncIterable を取得",
+    name: "V2 event.subscribeありでループ起動（SDK自動接続なし）",
     run: async () => {
       const mod = await import("../dist/index.js");
       const def = mod.default as unknown as { setup: (ctx: unknown) => Promise<unknown> };

@@ -14,6 +14,11 @@ function fileLog(level: string, message: string) {
   } catch {}
 }
 
+/** File-only note: recorded without touching stdout (for paths that must stay silent). */
+export function appendV2FileNote(level: string, message: string): void {
+  fileLog(level, message);
+}
+
 export function createV2LogSink(): AppLogSink {
   return {
     warn: (message) => {

@@ -1,9 +1,8 @@
 import type { AppLogSink } from "../../application/ports";
 import { generateDailyLogbookCore } from "../../application/generate-logbook.usecase";
-import { createV2LogSink } from "./log-sink.v2";
+import { appendV2FileNote, createV2LogSink } from "./log-sink.v2";
 import { createFallbackSessionAdapter, toSessionPort, type V2SessionLike } from "./session.v2";
 import { resolveV2Iterable } from "./event-source.v2";
-import { createFallbackSdkClient } from "./sdk-fallback";
 
 type V2CtxLike = {
   location?: { directory?: string };
@@ -49,13 +48,7 @@ function isVerboseLogEnabled(): boolean {
   return v === "1" || v === "true";
 }
 
-function detectV1Host(ctxKeys: string, hasEventSubscribe: boolean, hasSession: boolean): boolean {
-  try {
-    return ctxKeys.includes("agent") && ctxKeys.includes("skill") && !hasEventSubscribe && !hasSession;
-  } catch {
-    return false;
-  }
-}
+
 
 function resolveEventHost(anyCtx: V2CtxLike): { subscribe?: unknown } | undefined {
   return (anyCtx.event as unknown as { subscribe?: unknown }) ?? (anyCtx.client?.event as unknown as { subscribe?: unknown } | undefined);
@@ -75,22 +68,6 @@ async function tryHandleEventHost(
     return undefined;
   }
   void runV2EventLoop({ event: eventHost, session }, sink, directory, controller);
-  return () => controller.abort();
-}
-
-async function tryHandleSdkFallback(sink: AppLogSink, directory: string): Promise<(() => void) | undefined> {
-  const sdkFallback = await createFallbackSdkClient(sink);
-  if (!sdkFallback) return undefined;
-  const sdkEventHost = sdkFallback.client.event as unknown as { subscribe?: unknown } | undefined;
-  if (!sdkEventHost?.subscribe) return undefined;
-  await sink.info?.(`v2: using SDK fallback for event subscription via ${sdkFallback.url}`);
-  const fileSession = await createFallbackSessionAdapter(sink, null, directory);
-  if (!fileSession) {
-    await sink.warn("v2: SDK event fallback has no file session; idle handling disabled");
-    return undefined;
-  }
-  const controller = new AbortController();
-  void runV2EventLoop({ event: sdkEventHost, session: fileSession }, sink, directory, controller);
   return () => controller.abort();
 }
 
@@ -125,19 +102,11 @@ async function logV2Startup(
   hasEventSubscribe: boolean,
   hasClientEventSubscribe: boolean,
   hasSession: boolean,
-  isV1Host: boolean,
 ): Promise<void> {
-  // V1 host loads this module via Orca shared — skip silently unless verbose
-  if (isV1Host && !isVerboseLogEnabled()) return;
-  const v2Message = `daily-logbook plugin loaded (v2) app=${anyCtx.app?.name ?? "unknown"} ${anyCtx.app?.version ?? ""} ctxKeys=[${ctxKeys}] event.subscribe=${hasEventSubscribe ? "yes" : "no"} client.event.subscribe=${hasClientEventSubscribe ? "yes" : "no"} session=${hasSession ? "yes" : "no"}${isV1Host ? " [V1 host detected via Orca shared — delegating to V1]" : ""}`;
+  const v2Message = `daily-logbook plugin loaded (v2) app=${anyCtx.app?.name ?? "unknown"} ${anyCtx.app?.version ?? ""} ctxKeys=[${ctxKeys}] event.subscribe=${hasEventSubscribe ? "yes" : "no"} client.event.subscribe=${hasClientEventSubscribe ? "yes" : "no"} session=${hasSession ? "yes" : "no"}`;
   await sink.info?.(v2Message);
   // CLI visibility for expect stdout detection (2.0.11): also emit to stdout
   console.log(v2Message);
-  if (isV1Host) {
-    await sink.warn(
-      "v2Setup called on V1 host (ctxKeys without event/session). This is Orca shared's plugins being loaded by opencode 1.18.x. Daily-logbook will be handled by V1 DailyLogbookPlugin, not v2. Skipping v2 event setup.",
-    );
-  }
 }
 
 type V2EventLike = { type: string; data?: unknown; properties?: unknown };
@@ -165,21 +134,25 @@ export async function v2Setup(
   const hasEventSubscribe = typeof anyCtx.event?.subscribe === "function";
   const hasClientEventSubscribe = typeof anyCtx.client?.event?.subscribe === "function";
   const hasSession = !!anyCtx.session;
-  const isV1Host = detectV1Host(ctxKeys, hasEventSubscribe, hasSession);
-  await logV2Startup(sink, anyCtx, ctxKeys, hasEventSubscribe, hasClientEventSubscribe, hasSession, isV1Host);
-  if (isV1Host) return;
-  // Fix: v2 beta may deliver idle via hook even when event.subscribe exists.
-  // Previous code returned early with hostResult and never exposed the hook,
-  // so idle via hook was lost. Now start subscribe loop in background AND
-  // always expose the hook so both delivery paths work.
+  // v2 operates ONLY when the host provides an event stream.
+  // No localhost SDK probing and no hook without subscribe: that is how v2
+  // could activate inside a foreign (v1) process sharing this machine.
   const eventHost = resolveEventHost(anyCtx);
+  if (typeof eventHost?.subscribe !== "function") {
+    // Record to file only, stay silent on stdout.
+    appendV2FileNote("INFO", `v2Setup idle handling disabled (no event.subscribe in ctx) directory=${directory} ctxKeys=[${ctxKeys}]`);
+    return;
+  }
+  await logV2Startup(sink, anyCtx, ctxKeys, hasEventSubscribe, hasClientEventSubscribe, hasSession);
+  // v2 beta may deliver idle via hook even when event.subscribe exists.
+  // Start subscribe loop in background AND expose the hook so both paths work.
   const cleanups: Array<() => void> = [];
   const hostResult = await tryHandleEventHost(eventHost, anyCtx, sink, directory);
-  if (hostResult) cleanups.push(hostResult);
-  else {
-    const sdkResult = await tryHandleSdkFallback(sink, directory);
-    if (sdkResult) cleanups.push(sdkResult);
+  if (!hostResult) {
+    appendV2FileNote("INFO", `v2Setup idle handling disabled (no session adapter) directory=${directory} ctxKeys=[${ctxKeys}]`);
+    return;
   }
+  cleanups.push(hostResult);
   // Always build the hook (uses real ctx.session when available, fallback otherwise)
   // so idle delivered via host's {event} hook is handled even when subscribe loop is active.
   const hookSession = (anyCtx.session as V2SessionLike | undefined) ?? (await createFallbackSessionAdapter(sink, anyCtx.serverUrl, directory));
@@ -245,4 +218,4 @@ function extractSessionId(event: { data?: unknown; properties?: unknown }): stri
 }
 
 // Re-export helpers for testability (Phase3 keeps backward compat from daily-logbook path)
-export { detectV1Host as isV1Host, getV2Directory, getV2CtxKeys, resolveEventHost };
+export { getV2Directory, getV2CtxKeys, resolveEventHost };

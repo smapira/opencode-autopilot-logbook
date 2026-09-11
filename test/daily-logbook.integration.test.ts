@@ -155,6 +155,7 @@ describe("daily-logbook without TUI — bus path (vendor/opencode GlobalBus)", (
   test("daily-limit guard still works when idle is injected via bus (no TUI)", async () => {
     // Prove that our existing guards (dailyLimitInFlightByDate, isDailyLogbookExists) work even when
     // idle is injected via bus, not TUI.
+    delete process.env.OPENCODE_DAILY_LOGBOOK_TEMPLATE;
     const outputDir = join("artifacts", "daily");
     mkdirSync(join(tempDir, outputDir), { recursive: true });
     writeFileSync(join(tempDir, outputDir, `${todayDateString()}_logbook.md`), "existing");

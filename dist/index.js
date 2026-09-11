@@ -684,6 +684,9 @@ function fileLog(level, message) {
     appendFileSync(join2(dir, "daily-logbook-v2.log"), line);
   } catch {}
 }
+function appendV2FileNote(level, message) {
+  fileLog(level, message);
+}
 function createV2LogSink() {
   return {
     warn: (message) => {
@@ -861,59 +864,6 @@ async function logSubscribeResult(raw, sink) {
   return raw;
 }
 
-// src/adapters/v2/sdk-fallback.ts
-function getCandidateUrls() {
-  const candidates = [];
-  for (const key of ["OPENCODE_SERVER_URL", "OPENCODE_API_URL", "OPENCODE_SERVER"]) {
-    const v = process.env[key];
-    if (v)
-      candidates.push(v);
-  }
-  candidates.push("http://localhost:49374");
-  const envPort = process.env.ORCA_AGENT_HOOK_PORT;
-  if (envPort)
-    candidates.push(`http://localhost:${envPort}`);
-  candidates.push("http://localhost:4096", "http://localhost:8080");
-  return [...new Set(candidates)];
-}
-async function tryCreateForSpec(url, spec) {
-  let createOpencodeClient = null;
-  try {
-    const m = await import(spec).catch(() => null);
-    createOpencodeClient = m?.createOpencodeClient ?? null;
-  } catch {}
-  if (!createOpencodeClient)
-    return;
-  return tryCreateClientInstance(createOpencodeClient, url);
-}
-async function tryCreateClientInstance(factory, url) {
-  try {
-    const client = factory({ baseUrl: url });
-    await verifyClient(client);
-    return { client, session: client.session, url };
-  } catch {}
-  return;
-}
-async function verifyClient(client) {
-  await (client.session.list?.({ limit: 1 }) ?? Promise.resolve());
-  const hasEvent = typeof client.event?.subscribe === "function";
-  if (!hasEvent)
-    throw new Error("no event.subscribe");
-}
-async function createFallbackSdkClient(sink) {
-  const urls = getCandidateUrls();
-  for (const url of urls) {
-    const specs = ["@opencode-ai/sdk/v2", "@opencode-ai/sdk"];
-    for (const spec of specs) {
-      const result = await tryCreateForSpec(url, spec);
-      if (result)
-        return result;
-    }
-  }
-  await sink.warn(`fallback SDK client: all candidates failed (${urls.join(", ")})`);
-  return;
-}
-
 // src/adapters/v2/plugin.v2.ts
 async function handleV2IdleEvent(params) {
   const adapter = toSessionPort(params.session);
@@ -938,13 +888,6 @@ function isVerboseLogEnabled2() {
   const v = process.env.DAILY_LOGBOOK_DEBUG ?? process.env.DAILY_LOGBOOK_VERBOSE ?? process.env.DAILY_LOGBOOK_LOG_EVENTS;
   return v === "1" || v === "true";
 }
-function detectV1Host(ctxKeys, hasEventSubscribe, hasSession) {
-  try {
-    return ctxKeys.includes("agent") && ctxKeys.includes("skill") && !hasEventSubscribe && !hasSession;
-  } catch {
-    return false;
-  }
-}
 function resolveEventHost(anyCtx) {
   return anyCtx.event ?? anyCtx.client?.event;
 }
@@ -958,23 +901,6 @@ async function tryHandleEventHost(eventHost, anyCtx, sink, directory) {
     return;
   }
   runV2EventLoop({ event: eventHost, session }, sink, directory, controller);
-  return () => controller.abort();
-}
-async function tryHandleSdkFallback(sink, directory) {
-  const sdkFallback = await createFallbackSdkClient(sink);
-  if (!sdkFallback)
-    return;
-  const sdkEventHost = sdkFallback.client.event;
-  if (!sdkEventHost?.subscribe)
-    return;
-  await sink.info?.(`v2: using SDK fallback for event subscription via ${sdkFallback.url}`);
-  const fileSession = await createFallbackSessionAdapter(sink, null, directory);
-  if (!fileSession) {
-    await sink.warn("v2: SDK event fallback has no file session; idle handling disabled");
-    return;
-  }
-  const controller = new AbortController;
-  runV2EventLoop({ event: sdkEventHost, session: fileSession }, sink, directory, controller);
   return () => controller.abort();
 }
 function buildV2FallbackHook(fallbackSession, sink, directory) {
@@ -997,15 +923,10 @@ function buildV2FallbackHook(fallbackSession, sink, directory) {
     }
   };
 }
-async function logV2Startup(sink, anyCtx, ctxKeys, hasEventSubscribe, hasClientEventSubscribe, hasSession, isV1Host) {
-  if (isV1Host && !isVerboseLogEnabled2())
-    return;
-  const v2Message = `daily-logbook plugin loaded (v2) app=${anyCtx.app?.name ?? "unknown"} ${anyCtx.app?.version ?? ""} ctxKeys=[${ctxKeys}] event.subscribe=${hasEventSubscribe ? "yes" : "no"} client.event.subscribe=${hasClientEventSubscribe ? "yes" : "no"} session=${hasSession ? "yes" : "no"}${isV1Host ? " [V1 host detected via Orca shared \u2014 delegating to V1]" : ""}`;
+async function logV2Startup(sink, anyCtx, ctxKeys, hasEventSubscribe, hasClientEventSubscribe, hasSession) {
+  const v2Message = `daily-logbook plugin loaded (v2) app=${anyCtx.app?.name ?? "unknown"} ${anyCtx.app?.version ?? ""} ctxKeys=[${ctxKeys}] event.subscribe=${hasEventSubscribe ? "yes" : "no"} client.event.subscribe=${hasClientEventSubscribe ? "yes" : "no"} session=${hasSession ? "yes" : "no"}`;
   await sink.info?.(v2Message);
   console.log(v2Message);
-  if (isV1Host) {
-    await sink.warn("v2Setup called on V1 host (ctxKeys without event/session). This is Orca shared's plugins being loaded by opencode 1.18.x. Daily-logbook will be handled by V1 DailyLogbookPlugin, not v2. Skipping v2 event setup.");
-  }
 }
 function readIdleStatus(event) {
   const properties = event.properties;
@@ -1025,20 +946,19 @@ async function v2Setup(ctx) {
   const hasEventSubscribe = typeof anyCtx.event?.subscribe === "function";
   const hasClientEventSubscribe = typeof anyCtx.client?.event?.subscribe === "function";
   const hasSession = !!anyCtx.session;
-  const isV1Host = detectV1Host(ctxKeys, hasEventSubscribe, hasSession);
-  await logV2Startup(sink, anyCtx, ctxKeys, hasEventSubscribe, hasClientEventSubscribe, hasSession, isV1Host);
-  if (isV1Host)
-    return;
   const eventHost = resolveEventHost(anyCtx);
+  if (typeof eventHost?.subscribe !== "function") {
+    appendV2FileNote("INFO", `v2Setup idle handling disabled (no event.subscribe in ctx) directory=${directory} ctxKeys=[${ctxKeys}]`);
+    return;
+  }
+  await logV2Startup(sink, anyCtx, ctxKeys, hasEventSubscribe, hasClientEventSubscribe, hasSession);
   const cleanups = [];
   const hostResult = await tryHandleEventHost(eventHost, anyCtx, sink, directory);
-  if (hostResult)
-    cleanups.push(hostResult);
-  else {
-    const sdkResult = await tryHandleSdkFallback(sink, directory);
-    if (sdkResult)
-      cleanups.push(sdkResult);
+  if (!hostResult) {
+    appendV2FileNote("INFO", `v2Setup idle handling disabled (no session adapter) directory=${directory} ctxKeys=[${ctxKeys}]`);
+    return;
   }
+  cleanups.push(hostResult);
   const hookSession = anyCtx.session ?? await createFallbackSessionAdapter(sink, anyCtx.serverUrl, directory);
   if (!hookSession) {
     if (cleanups.length > 0)
@@ -1174,7 +1094,6 @@ export {
   getUsageStats,
   getThrottleWindowMs,
   getDbPath,
-  getCandidateUrls,
   generateDailyLogbookCore,
   formatUsageTable,
   formatTokens,
@@ -1187,7 +1106,6 @@ export {
   createV1FallbackSessionPort,
   createV1FallbackAdapter,
   createFallbackSessionAdapter,
-  createFallbackSdkClient,
   buildTranscript,
   buildPrompt,
   __resetGlobalStateForTest,

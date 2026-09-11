@@ -15,7 +15,7 @@ npx eslint .
 
 echo ""
 echo "[3/5] Bun tests"
-bun test
+env -u OPENCODE_DAILY_LOGBOOK_TEMPLATE -u OPENCODE_DAILY_LIMIT -u OPENCODE_DAILY_THROTTLE_MS bun test
 
 echo ""
 echo "[4/5] Circular dependency check"

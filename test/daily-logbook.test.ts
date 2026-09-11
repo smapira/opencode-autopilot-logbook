@@ -492,6 +492,7 @@ describe("DailyLogbookPlugin daily-limit integration", () => {
   });
 
   test("skips generation when today's logbook file already exists (daily-limit enabled)", async () => {
+    delete process.env.OPENCODE_DAILY_LOGBOOK_TEMPLATE;
     process.env[DAILY_LIMIT_ENV] = "true";
     process.env[THROTTLE_ENV] = "0";
 
@@ -1238,6 +1239,7 @@ describe("DailyLogbookPlugin usage integration", () => {
   test("does not open DB when daily-limit suppresses generation", async () => {
     // daily-limit で suppress されるケースでは DB を開かない（不要な warn を出さない）
     // ここでは既存ファイルを作って suppress させる
+    delete process.env.OPENCODE_DAILY_LOGBOOK_TEMPLATE;
     createTmpDb(dbPath);
     const outputDir = join("artifacts", "daily");
     mkdirSync(join(tmpDir, outputDir), { recursive: true });
@@ -1320,6 +1322,7 @@ describe("DailyLogbookPluginV2", () => {
   test("handleV2IdleEvent respects daily-limit via existsSync (V2 path same as V1)", async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "v2-daily-"));
     const envSnapshot = snapshotPluginEnv();
+    delete process.env.OPENCODE_DAILY_LOGBOOK_TEMPLATE;
     process.env[DAILY_LIMIT_ENV] = "true";
     process.env[THROTTLE_ENV] = "0";
     try {

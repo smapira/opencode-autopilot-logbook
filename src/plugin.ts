@@ -10,7 +10,6 @@ export { createV2LogSink } from "./adapters/v2/log-sink.v2";
 export { createFallbackSessionAdapter, toSessionPort } from "./adapters/v2/session.v2";
 export type { V2SessionLike } from "./adapters/v2/session.v2";
 export { resolveV2Iterable, toAsyncIterable, isAsyncIterable, isEffectStream } from "./adapters/v2/event-source.v2";
-export { createFallbackSdkClient, getCandidateUrls } from "./adapters/v2/sdk-fallback";
 
 // Domain / Application re-exports for backward compat when importing from build entry
 export { maskSecrets, SECRET_PATTERNS, isRedactEnabled } from "./domain/masking";

@@ -150,10 +150,10 @@ describe("v2 event dispatch (session.idle deprecated → session.status)", () =>
   });
 });
 
-describe("v1-host skip logging", () => {
-  test("silent by default, logged when DAILY_LOGBOOK_DEBUG=1", async () => {
+describe("no-capability skip", () => {
+  test("no event.subscribe and no session: returns undefined, stdout always silent", async () => {
     const dir = await mkdtemp(join(tmpdir(), "v1skip-"));
-    // v1 host shape: agent+skill keys, no event.subscribe, no session
+    // host shape with no event delivery path: no event.subscribe, no session
     const ctx = { directory: dir, agent: {}, skill: {} };
     const out: string[] = [];
     const origLog = console.log;
@@ -161,26 +161,18 @@ describe("v1-host skip logging", () => {
     console.log = (...a: unknown[]) => void out.push(a.map(String).join(" "));
     console.warn = (...a: unknown[]) => void out.push(a.map(String).join(" "));
     const savedDebug = process.env.DAILY_LOGBOOK_DEBUG;
-    const savedVerbose = process.env.DAILY_LOGBOOK_VERBOSE;
-    const savedLogEvents = process.env.DAILY_LOGBOOK_LOG_EVENTS;
     try {
       delete process.env.DAILY_LOGBOOK_DEBUG;
-      delete process.env.DAILY_LOGBOOK_VERBOSE;
-      delete process.env.DAILY_LOGBOOK_LOG_EVENTS;
       expect(await v2Setup(ctx)).toBeUndefined();
       expect(out.filter((l) => l.includes("daily-logbook")).length).toBe(0);
       process.env.DAILY_LOGBOOK_DEBUG = "1";
       expect(await v2Setup(ctx)).toBeUndefined();
-      expect(out.some((l) => l.includes("V1 host detected"))).toBe(true);
+      expect(out.filter((l) => l.includes("daily-logbook")).length).toBe(0);
     } finally {
       console.log = origLog;
       console.warn = origWarn;
       if (savedDebug === undefined) delete process.env.DAILY_LOGBOOK_DEBUG;
       else process.env.DAILY_LOGBOOK_DEBUG = savedDebug;
-      if (savedVerbose === undefined) delete process.env.DAILY_LOGBOOK_VERBOSE;
-      else process.env.DAILY_LOGBOOK_VERBOSE = savedVerbose;
-      if (savedLogEvents === undefined) delete process.env.DAILY_LOGBOOK_LOG_EVENTS;
-      else process.env.DAILY_LOGBOOK_LOG_EVENTS = savedLogEvents;
     }
   });
 });

@@ -657,7 +657,6 @@ var DailyLogbookPlugin = async ({ client, directory }) => {
             message: `[daily-logbook] event received type=${event?.type} time=${now} raw=${raw}`
           }
         });
-        console.log(`[daily-logbook] event type=${event?.type} time=${now} raw=${raw}`);
       }
       if (event.type !== "session.idle")
         return;
@@ -913,7 +912,6 @@ function buildV2FallbackHook(fallbackSession, sink, directory) {
     event: async ({ event }) => {
       if (isVerboseLogEnabled2()) {
         await sink.info?.(`[daily-logbook] v2 event received type=${event.type}`);
-        console.log(`[daily-logbook] v2 event type=${event.type}`);
       }
       if (!isIdleV2Event(event))
         return;
@@ -991,7 +989,6 @@ async function runV2EventLoop(anyCtx, sink, directory, controller) {
     for await (const event of iterable) {
       if (isVerboseLogEnabled2()) {
         await sink.info?.(`[daily-logbook] v2 event received type=${event.type}`);
-        console.log(`[daily-logbook] v2 event type=${event.type}`);
       }
       if (!isIdleV2Event(event))
         continue;

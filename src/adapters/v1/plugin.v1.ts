@@ -59,7 +59,6 @@ export const DailyLogbookPlugin: Plugin = async ({ client, directory }) => {
             message: `[daily-logbook] event received type=${(event as { type?: unknown })?.type} time=${now} raw=${raw}`,
           },
         });
-        console.log(`[daily-logbook] event type=${(event as { type?: unknown })?.type} time=${now} raw=${raw}`);
       }
       if (event.type !== "session.idle") return;
       const sink = createV1LogSink(client);

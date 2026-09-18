@@ -80,7 +80,6 @@ export function buildV2FallbackHook(
     event: async ({ event }: { event: { type: string; data?: unknown; properties?: unknown } }) => {
       if (isVerboseLogEnabled()) {
         await sink.info?.(`[daily-logbook] v2 event received type=${event.type}`);
-        console.log(`[daily-logbook] v2 event type=${event.type}`);
       }
       if (!isIdleV2Event(event)) return;
       const data = (event as { data?: { sessionID?: string }; properties?: { sessionID?: string } }).data;
@@ -192,7 +191,6 @@ export async function runV2EventLoop(
      for await (const event of iterable as AsyncIterable<{ type: string; data?: unknown; properties?: unknown }>) {
       if (isVerboseLogEnabled()) {
         await sink.info?.(`[daily-logbook] v2 event received type=${event.type}`);
-        console.log(`[daily-logbook] v2 event type=${event.type}`);
       }
       if (!isIdleV2Event(event)) continue;
       const sessionID = extractSessionId(event);

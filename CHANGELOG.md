@@ -5,6 +5,21 @@
 ### Deprecated
 - `daily-logbook.ts` is now a 2-line facade (`export * from "./src/plugin"` + `export { default }`) kept only for `from "../daily-logbook"` backward compatibility (Strangler Fig). It will be **removed in 3.0.0**; migrate to `from "./src/plugin"` or the package entry `dist/index.js` (`main`). Until then `from "../daily-logbook"` continues to re-export the full public API (no break).
 
+## 2.0.12 - fix: v2 cannot activate inside v1 processes (2026-09-11)
+
+### Fixed
+- **v2 SDK fallback の localhost 接続を完全封止**: `tryHandleSdkFallback` が localhost に接続し、同機で動いている `opencode2.exe serve` に当たって v1 プロセス内で v2 が誤起動する構造的穴を修正。`tryHandleSdkFallback` 関数・import を完全削除
+- **subscribe なしだったので hook 返却を停止**: subscribe がなくても `{event}` hook を返していたため、ホストが hook を繋げば v2 処理が動く構造だった。以後は `eventHost?.subscribe` の直接チェックで、subscribe 実在時のみ hook 構築
+- **未使用 export の掃除**: `plugin.ts` から `createFallbackSdkClient`/`getCandidateUrls` の export を削除
+
+### Changed
+- **complete-uninstall.sh v6**: バージョン引数対応 (`[VERSION ...] [--version X] [--dry-run]`)。`2.0.5` デフォルト除去を廃止し、未指定時は基本名のみ、指定版だけ追加で除去する設計に変更
+- **daily-limit テストの環境変数隔離**: `OPENCODE_DAILY_LOGBOOK_TEMPLATE` がグローバルにセットされている環境でも daily-limit ガードが正しく動作するよう、4件のテストに `delete process.env.OPENCODE_DAILY_LOGBOOK_TEMPLATE` を追加
+- **pre-commit hook**: `env -u OPENCODE_DAILY_LOGBOOK_TEMPLATE` でテスト実行時の環境変数汚染を防止
+
+### Removed
+- `src/adapters/v2/sdk-fallback.ts` の import を `plugin.v2.ts` から除去（ファイル自体は残存）
+
 ## 2.0.11 - fix: plain object default + console.log + DB separation (2026-09-04)
 
 ### Fixed

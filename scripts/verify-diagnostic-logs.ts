@@ -144,7 +144,15 @@ const cases: Case[] = [
           prompt: async () => ({}),
         },
       };
-      const result = await captureConsole(async () => def.setup(mockWithEvent as unknown));
+      // console.log is gated behind DAILY_LOGBOOK_DEBUG; set it to capture stdout
+      const procEnv = (globalThis as unknown as { process: { env: Record<string, string | undefined> } }).process.env;
+      procEnv.DAILY_LOGBOOK_DEBUG = "1";
+      let result: { logs: string[]; result: unknown };
+      try {
+        result = await captureConsole(async () => def.setup(mockWithEvent as unknown));
+      } finally {
+        delete procEnv.DAILY_LOGBOOK_DEBUG;
+      }
       return result;
     },
     expect: (logs) => {

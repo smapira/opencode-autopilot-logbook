@@ -32,7 +32,11 @@ export function createV2LogSink(): AppLogSink {
       fileLog("ERROR", full);
     },
     info: (message) => {
-      console.log(`[${SERVICE_NAME}] ${message}`);
+      // Verbose only: file log always, stdout only when debugging
+      const v = process.env.DAILY_LOGBOOK_DEBUG ?? process.env.VERBOSE ?? process.env.LOG_EVENTS;
+      if (v === "1" || v === "true") {
+        console.log(`[${SERVICE_NAME}] ${message}`);
+      }
       fileLog("INFO", message);
     },
   };

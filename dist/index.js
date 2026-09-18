@@ -636,7 +636,9 @@ var DailyLogbookPlugin = async ({ client, directory }) => {
   await client.app.log({
     body: { service: SERVICE_NAME2, level: "info", message: "daily-logbook plugin loaded" }
   });
-  console.log("daily-logbook plugin loaded");
+  if (isVerboseLogEnabled()) {
+    console.log("daily-logbook plugin loaded");
+  }
   return {
     event: async ({ event }) => {
       if (isVerboseLogEnabled()) {
@@ -700,7 +702,10 @@ function createV2LogSink() {
       fileLog("ERROR", full);
     },
     info: (message) => {
-      console.log(`[${SERVICE_NAME3}] ${message}`);
+      const v = process.env.DAILY_LOGBOOK_DEBUG ?? process.env.VERBOSE ?? process.env.LOG_EVENTS;
+      if (v === "1" || v === "true") {
+        console.log(`[${SERVICE_NAME3}] ${message}`);
+      }
       fileLog("INFO", message);
     }
   };
@@ -926,7 +931,9 @@ function buildV2FallbackHook(fallbackSession, sink, directory) {
 async function logV2Startup(sink, anyCtx, ctxKeys, hasEventSubscribe, hasClientEventSubscribe, hasSession) {
   const v2Message = `daily-logbook plugin loaded (v2) app=${anyCtx.app?.name ?? "unknown"} ${anyCtx.app?.version ?? ""} ctxKeys=[${ctxKeys}] event.subscribe=${hasEventSubscribe ? "yes" : "no"} client.event.subscribe=${hasClientEventSubscribe ? "yes" : "no"} session=${hasSession ? "yes" : "no"}`;
   await sink.info?.(v2Message);
-  console.log(v2Message);
+  if (isVerboseLogEnabled2()) {
+    console.log(v2Message);
+  }
 }
 function readIdleStatus(event) {
   const properties = event.properties;

@@ -105,8 +105,10 @@ async function logV2Startup(
 ): Promise<void> {
   const v2Message = `daily-logbook plugin loaded (v2) app=${anyCtx.app?.name ?? "unknown"} ${anyCtx.app?.version ?? ""} ctxKeys=[${ctxKeys}] event.subscribe=${hasEventSubscribe ? "yes" : "no"} client.event.subscribe=${hasClientEventSubscribe ? "yes" : "no"} session=${hasSession ? "yes" : "no"}`;
   await sink.info?.(v2Message);
-  // CLI visibility for expect stdout detection (2.0.11): also emit to stdout
-  console.log(v2Message);
+  // Verbose only: also emit to stdout when debugging
+  if (isVerboseLogEnabled()) {
+    console.log(v2Message);
+  }
 }
 
 type V2EventLike = { type: string; data?: unknown; properties?: unknown };
